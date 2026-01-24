@@ -1,0 +1,30 @@
+# Web Framework
+Flask==3.0.0
+flask-cors==4.0.0
+
+# Database
+Flask-SQLAlchemy==3.1.1
+PyMySQL==1.1.0
+cryptography==41.0.7
+
+# Face Recognition (DeepFace - No C++ compiler needed!)
+deepface==0.0.79
+tf-keras==2.15.0
+tensorflow==2.15.0
+
+# Computer Vision
+opencv-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.1.0
+
+# Object Detection (YOLO)
+ultralytics==8.0.227
+torch==2.1.1
+torchvision==0.16.1
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Optional but recommended
+gunicorn==21.2.0  # For production deployment
