@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import LandingPage from "./components/LandingPage";
 import LoginPage from "./components/LoginPage";
 import AdminDashboard from "./components/AdminDashboard";
-import StaffDashboard from "./components/StaffDashboard";
+import StaffDashboard from "./components/StaffWelcomeDashboard";
 import { User } from "./types";
 
 const App: React.FC = () => {

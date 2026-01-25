@@ -18,6 +18,9 @@ const LoginPage: React.FC<LoginPageProps> = ({ role, onLogin, onBack }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [email, setEmail] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
 
   useEffect(() => {
     initializeUsers();
@@ -106,8 +109,147 @@ const LoginPage: React.FC<LoginPageProps> = ({ role, onLogin, onBack }) => {
     }
   };
 
+  const handleForgotPassword = async () => {
+    setResetMessage('');
+    
+    if (!email) {
+      setResetMessage('Please enter your email address');
+      return;
+    }
+
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setResetMessage('Please enter a valid email address');
+      return;
+    }
+
+    try {
+      // ⚠️ REPLACE THESE 3 VALUES WITH YOUR ACTUAL EMAILJS CREDENTIALS ⚠️
+      const serviceId = 'service_syp3r78';  // ✅ Your service ID
+      const templateId = 'template_gslovmj'; // 👈 CHANGE THIS - Get from EmailJS template page
+      const publicKey = 'v5UWyazp2jiHWISxW';   // 👈 CHANGE THIS - Get from EmailJS Account section
+
+      // Generate a password reset token
+      const resetToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      const resetLink = `${window.location.origin}#reset=${resetToken}`;
+      
+      // Store the reset token temporarily (expires in 1 hour)
+      const resetData = {
+        email: email,
+        token: resetToken,
+        expires: Date.now() + (60 * 60 * 1000) // 1 hour from now
+      };
+      
+      if (typeof window.storage !== 'undefined') {
+        await window.storage.set(`reset_${resetToken}`, JSON.stringify(resetData));
+      } else {
+        localStorage.setItem(`reset_${resetToken}`, JSON.stringify(resetData));
+      }
+
+      // Template parameters - matching your EmailJS template variables
+      const templateParams = {
+        email: email,        // for {{email}} in template
+        link: resetLink,     // for {{link}} in template
+        to_email: email      // recipient email
+      };
+
+      // Send email using EmailJS API
+      const response = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          service_id: serviceId,
+          template_id: templateId,
+          user_id: publicKey,
+          template_params: templateParams
+        })
+      });
+
+      if (response.ok) {
+        setResetMessage('Password reset link has been sent to your email!');
+        setTimeout(() => {
+          setShowForgotPassword(false);
+          setEmail('');
+          setResetMessage('');
+        }, 3000);
+      } else {
+        setResetMessage('Failed to send email. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error sending email:', error);
+      setResetMessage('Failed to send email. Please try again.');
+    }
+  };
+
   return (
     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, width: '100vw', height: '100vh', background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%)', overflow: 'hidden', margin: 0 }}>
+      {/* Forgot Password Modal */}
+      {showForgotPassword && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+          <div style={{ background: 'white', borderRadius: '1rem', padding: '2rem', width: '100%', maxWidth: '24rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)' }}>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '1rem' }}>Reset Password</h2>
+            <p style={{ color: '#475569', marginBottom: '1.5rem', fontSize: '0.875rem' }}>
+              Enter your email address and we'll send you a link to reset your password.
+            </p>
+            
+            {resetMessage && (
+              <div style={{ 
+                background: resetMessage.includes('sent') ? '#d1fae5' : '#fee2e2', 
+                border: `1px solid ${resetMessage.includes('sent') ? '#86efac' : '#fca5a5'}`, 
+                color: resetMessage.includes('sent') ? '#065f46' : '#991b1b', 
+                padding: '0.75rem 1rem', 
+                borderRadius: '0.5rem', 
+                marginBottom: '1rem', 
+                fontSize: '0.875rem' 
+              }}>
+                {resetMessage}
+              </div>
+            )}
+
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{ display: 'block', color: '#1e293b', fontWeight: '700', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                Email Address
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="your.email@example.com"
+                style={{ width: '100%', padding: '0.75rem 1rem', background: 'white', border: '2px solid #cbd5e1', borderRadius: '0.625rem', outline: 'none', color: '#0f172a', fontSize: '1rem', transition: 'border-color 0.2s', boxSizing: 'border-box' }}
+                onFocus={(e) => e.currentTarget.style.borderColor = '#4f46e5'}
+                onBlur={(e) => e.currentTarget.style.borderColor = '#cbd5e1'}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <button
+                onClick={() => {
+                  setShowForgotPassword(false);
+                  setEmail('');
+                  setResetMessage('');
+                }}
+                style={{ flex: 1, padding: '0.75rem 1.5rem', background: '#e2e8f0', color: '#475569', fontWeight: '600', borderRadius: '0.5rem', border: 'none', cursor: 'pointer', transition: 'background 0.2s' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#cbd5e1'}
+                onMouseLeave={(e) => e.currentTarget.style.background = '#e2e8f0'}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleForgotPassword}
+                style={{ flex: 1, padding: '0.75rem 1.5rem', background: 'linear-gradient(to right, #4f46e5, #3730a3)', color: 'white', fontWeight: '600', borderRadius: '0.5rem', border: 'none', cursor: 'pointer', transition: 'transform 0.2s' }}
+                onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
+                onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+              >
+                Send Link
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Back button */}
       <button
         onClick={onBack}
@@ -162,12 +304,16 @@ const LoginPage: React.FC<LoginPageProps> = ({ role, onLogin, onBack }) => {
                 <label style={{ display: 'block', color: '#1e293b', fontWeight: '700', fontSize: '0.875rem' }}>
                   Password
                 </label>
-                <button style={{ color: '#4f46e5', fontSize: '0.75rem', fontWeight: '700', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'none' }}
-                  onMouseEnter={(e) => e.currentTarget.style.color = '#3730a3'}
-                  onMouseLeave={(e) => e.currentTarget.style.color = '#4f46e5'}
-                >
-                  Forgot Password?
-                </button>
+                {role === 'staff' && (
+                  <button 
+                    onClick={() => setShowForgotPassword(true)}
+                    style={{ color: '#4f46e5', fontSize: '0.75rem', fontWeight: '700', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'none' }}
+                    onMouseEnter={(e) => e.currentTarget.style.color = '#3730a3'}
+                    onMouseLeave={(e) => e.currentTarget.style.color = '#4f46e5'}
+                  >
+                    Forgot Password?
+                  </button>
+                )}
               </div>
               <input
                 type="password"
