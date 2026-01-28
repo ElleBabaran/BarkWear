@@ -13,6 +13,8 @@ declare global {
 
 import React, { useState, useEffect } from "react";
 import { Calendar, User, Clock, LogOut, Camera } from "lucide-react";
+import Schedule from './Schedule';
+import PhotoCapture from './Capture';
 
 type StaffPage = "attendance" | "students" | "schedule";
 
@@ -31,21 +33,17 @@ interface AttendanceRecord {
   status: 'present' | 'absent' | 'late';
 }
 
-interface Schedule {
-  id: string;
-  day: string;
-  startTime: string;
-  endTime: string;
-  class: string;
-}
-
 interface StaffWelcomeDashboardProps {
   user?: UserType;
   onLogout?: () => void;
   onNavigate?: (page: StaffPage) => void;
 }
 
-const LiveDetection = ({ onBack }: { onBack: () => void }) => {
+interface LiveDetectionProps {
+  onBack: () => void;
+}
+
+const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack }) => {
   const [detectedStudentName, setDetectedStudentName] = useState('');
   const [detectedItems, setDetectedItems] = useState<string[]>([]);
   const [course, setCourse] = useState('');
@@ -221,75 +219,17 @@ const StaffWelcomeDashboard: React.FC<StaffWelcomeDashboardProps> = ({
   onNavigate = () => {}
 }) => {
   const [activeView, setActiveView] = useState<'welcome' | 'attendance' | 'students' | 'schedule'>('welcome');
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
 
-  useEffect(() => {
-    loadSchedules();
-  }, []);
-
-  const loadSchedules = async () => {
-    try {
-      const result = await window.storage.get('schedules');
-      if (result) {
-        setSchedules(JSON.parse(result.value));
-      } else {
-        const defaultSchedule = [
-          { id: '1', day: 'Monday', startTime: '08:00', endTime: '10:00', class: 'Basic Training' },
-          { id: '2', day: 'Wednesday', startTime: '14:00', endTime: '16:00', class: 'Advanced Training' },
-          { id: '3', day: 'Friday', startTime: '10:00', endTime: '12:00', class: 'Agility Course' }
-        ];
-        await window.storage.set('schedules', JSON.stringify(defaultSchedule));
-        setSchedules(defaultSchedule);
-      }
-    } catch (err) {
-      const defaultSchedule = [
-        { id: '1', day: 'Monday', startTime: '08:00', endTime: '10:00', class: 'Basic Training' },
-        { id: '2', day: 'Wednesday', startTime: '14:00', endTime: '16:00', class: 'Advanced Training' },
-        { id: '3', day: 'Friday', startTime: '10:00', endTime: '12:00', class: 'Agility Course' }
-      ];
-      setSchedules(defaultSchedule);
-    }
-  };
-
-  if (activeView === 'attendance' || activeView === 'students') {
+  if (activeView === 'attendance') {
     return <LiveDetection onBack={() => setActiveView('welcome')} />;
   }
 
+  if (activeView === 'students') {
+    return <PhotoCapture onBack={() => setActiveView('welcome')} />;
+  }
+
   if (activeView === 'schedule') {
-    return (
-      <div style={{ minHeight: '100vh', backgroundColor: '#f9fafb' }}>
-        <nav style={{ backgroundColor: 'white', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderBottom: '1px solid #e5e7eb' }}>
-          <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '16px' }}>
-            <button onClick={() => setActiveView('welcome')} style={{ color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px' }}>
-              ← Back to Dashboard
-            </button>
-          </div>
-        </nav>
-        <div style={{ maxWidth: '896px', margin: '0 auto', padding: '32px 16px' }}>
-          <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '24px' }}>Class Schedule</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {schedules.map(schedule => (
-              <div key={schedule.id} style={{ backgroundColor: 'white', borderRadius: '8px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <div style={{ backgroundColor: '#dbeafe', padding: '12px', borderRadius: '8px' }}>
-                      <Calendar color="#2563eb" size={24} />
-                    </div>
-                    <div>
-                      <p style={{ fontWeight: '600', color: '#1f2937', margin: '0 0 4px 0' }}>{schedule.class}</p>
-                      <p style={{ fontSize: '14px', color: '#6b7280', margin: 0 }}>{schedule.day}</p>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <p style={{ fontWeight: '600', color: '#1f2937', margin: 0 }}>{schedule.startTime} - {schedule.endTime}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
+    return <Schedule onBack={() => setActiveView('welcome')} />;
   }
 
   return (
