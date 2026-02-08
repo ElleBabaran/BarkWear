@@ -1,0 +1,11 @@
+# Path to your dataset (ADJUST THIS!)
+path: C:\Users\Aron\Desktop\BarkWear\ml-service\NuNiform
+train: images/train
+val: images/val
+
+# Classes
+nc: 3
+names:
+  0: blue_polo
+  1: black_pants
+  2: id_card
