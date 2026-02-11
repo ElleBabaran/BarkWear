@@ -11,14 +11,30 @@ interface Detection {
   bbox: number[];
 }
 
+interface ScheduleOption {
+  schedule_id: number;
+  subject_name: string;
+  block: string;
+  room_code: string;
+  instructor_name: string;
+  start_time: string;      // "HH:MM:SS"
+  end_time: string;        // "HH:MM:SS"
+  day_of_week: string;     // "Monday", "Tuesday", ...
+}
+
 const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
   const [detectedStudentName, setDetectedStudentName] = useState('');
   const [detectedItems, setDetectedItems] = useState<string[]>([]);
   const [uniformStatus, setUniformStatus] = useState('');
   const [detections, setDetections] = useState<Detection[]>([]);
+  
+  // ---------- SESSION DETAILS (NOW FROM DB) ----------
+  const [scheduleOptions, setScheduleOptions] = useState<ScheduleOption[]>([]);
   const [course, setCourse] = useState('');
   const [room, setRoom] = useState('');
   const [professor, setProfessor] = useState('');
+  // ----------------------------------------------------
+  
   const [tardy, setTardy] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -33,13 +49,63 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
   const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const API_URL = 'http://localhost:5000/detect';
+  const SCHEDULE_API = 'http://localhost:5000/schedules/';
 
   const addLog = (message: string) => {
     console.log(message);
     setDebugLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`].slice(-10));
   };
 
+  // ---------- FETCH SCHEDULES FROM DATABASE ----------
+  const fetchSchedules = async () => {
+    try {
+      addLog('📅 Fetching schedules from database...');
+      const res = await fetch(SCHEDULE_API);
+      const data = await res.json();
+      if (data.success) {
+        setScheduleOptions(data.schedules);
+        addLog(`✅ Loaded ${data.schedules.length} schedules`);
+        
+        // Auto-select based on current day & time
+        autoSelectSchedule(data.schedules);
+      } else {
+        addLog('❌ Failed to load schedules: ' + data.error);
+      }
+    } catch (err: any) {
+      addLog('❌ Error fetching schedules: ' + err.message);
+    }
+  };
+
+  // ---------- AUTO-SELECT SCHEDULE (BY DAY/TIME) ----------
+  const autoSelectSchedule = (schedules: ScheduleOption[]) => {
+    const now = new Date();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const currentDay = days[now.getDay()];
+    const currentTime = now.toTimeString().slice(0, 8); // "HH:MM:SS"
+
+    const matched = schedules.find(s => {
+      if (s.day_of_week !== currentDay) return false;
+      return s.start_time <= currentTime && s.end_time >= currentTime;
+    });
+
+    if (matched) {
+      setCourse(matched.subject_name);
+      setRoom(matched.room_code);
+      setProfessor(matched.instructor_name);
+      addLog(`🎯 Auto-selected: ${matched.subject_name} (${matched.room_code} - ${matched.instructor_name})`);
+    } else {
+      addLog('⏰ No active schedule at this time');
+    }
+  };
+
+  // ---------- LOAD SCHEDULES ON MOUNT ----------
+  useEffect(() => {
+    fetchSchedules();
+  }, []);
+
+  // ---------- CAMERA & DETECTION  ----------
   const startCamera = async () => {
+    // ... (your existing startCamera function, unchanged) ...
     try {
       setErrorMessage('');
       addLog('🎥 Requesting camera access...');
@@ -184,87 +250,82 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
   };
 
   const drawBoundingBoxes = (detections: Detection[]) => {
-  console.log('🎨 drawBoundingBoxes called with', detections.length, 'detections');
-  
-  const video = videoRef.current;
-  const canvas = overlayCanvasRef.current;
-  
-  if (!video) {
-    console.error('❌ No video ref');
-    return;
-  }
-  
-  if (!canvas) {
-    console.error('❌ No canvas ref');
-    return;
-  }
-  
-  console.log('📺 Video dimensions:', video.videoWidth, 'x', video.videoHeight);
-  console.log('🖼️ Canvas dimensions:', canvas.width, 'x', canvas.height);
-  
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    console.error('❌ Cannot get canvas context');
-    return;
-  }
-  
-  // Ensure canvas matches video
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  console.log('🧹 Canvas cleared');
-  
-  detections.forEach((det, index) => {
-    const [x1, y1, x2, y2] = det.bbox;
-    const width = x2 - x1;
-    const height = y2 - y1;
+    console.log('🎨 drawBoundingBoxes called with', detections.length, 'detections');
     
-    console.log(`   Box ${index + 1}:`, {
-      class: det.class,
-      confidence: det.confidence,
-      bbox: [x1, y1, x2, y2],
-      size: [width, height]
+    const video = videoRef.current;
+    const canvas = overlayCanvasRef.current;
+    
+    if (!video) {
+      console.error('❌ No video ref');
+      return;
+    }
+    
+    if (!canvas) {
+      console.error('❌ No canvas ref');
+      return;
+    }
+    
+    console.log('📺 Video dimensions:', video.videoWidth, 'x', video.videoHeight);
+    console.log('🖼️ Canvas dimensions:', canvas.width, 'x', canvas.height);
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.error('❌ Cannot get canvas context');
+      return;
+    }
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    console.log('🧹 Canvas cleared');
+    
+    detections.forEach((det, index) => {
+      const [x1, y1, x2, y2] = det.bbox;
+      const width = x2 - x1;
+      const height = y2 - y1;
+      
+      console.log(`   Box ${index + 1}:`, {
+        class: det.class,
+        confidence: det.confidence,
+        bbox: [x1, y1, x2, y2],
+        size: [width, height]
+      });
+      
+      const colors: { [key: string]: string } = {
+        'id_card': '#ff0000',
+        'blue_polo': '#00ff00',
+        'black_pants': '#0000ff',
+        'id': '#ff0000',
+        'polo': '#00ff00',
+        'pants': '#0000ff',
+        'shoes': '#ffff00'
+      };
+      const color = colors[det.class.toLowerCase()] || '#4ade80';
+      
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 5;
+      ctx.strokeRect(x1, y1, width, height);
+      
+      ctx.fillStyle = color + '40';
+      ctx.fillRect(x1, y1, width, height);
+      
+      const label = `${det.class} ${(det.confidence * 100).toFixed(0)}%`;
+      ctx.font = 'bold 20px Arial';
+      const textMetrics = ctx.measureText(label);
+      
+      ctx.fillStyle = color;
+      ctx.fillRect(x1, y1 - 28, textMetrics.width + 10, 28);
+      
+      ctx.fillStyle = '#000000';
+      ctx.fillText(label, x1 + 5, y1 - 8);
+      
+      console.log(`   ✅ Drew box ${index + 1}`);
     });
     
-    // Different colors for different items
-    const colors: { [key: string]: string } = {
-      'id_card': '#ff0000',      // Red
-      'blue_polo': '#00ff00',    // Green
-      'black_pants': '#0000ff',  // Blue
-      'id': '#ff0000',
-      'polo': '#00ff00',
-      'pants': '#0000ff',
-      'shoes': '#ffff00'
-    };
-    const color = colors[det.class.toLowerCase()] || '#4ade80';
-    
-    // Draw THICK bounding box
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 5;  // Thick line
-    ctx.strokeRect(x1, y1, width, height);
-    
-    // Draw semi-transparent fill
-    ctx.fillStyle = color + '40';
-    ctx.fillRect(x1, y1, width, height);
-    
-    // Draw label
-    const label = `${det.class} ${(det.confidence * 100).toFixed(0)}%`;
-    ctx.font = 'bold 20px Arial';
-    const textMetrics = ctx.measureText(label);
-    
-    ctx.fillStyle = color;
-    ctx.fillRect(x1, y1 - 28, textMetrics.width + 10, 28);
-    
-    ctx.fillStyle = '#000000';
-    ctx.fillText(label, x1 + 5, y1 - 8);
-    
-    console.log(`   ✅ Drew box ${index + 1}`);
-  });
-  
-  console.log('✅ Finished drawing all boxes');
-  addLog(`✅ Drew ${detections.length} boxes`);
-};
+    console.log('✅ Finished drawing all boxes');
+    addLog(`✅ Drew ${detections.length} boxes`);
+  };
 
   const runDetection = async () => {
     if (isPaused || !isRecording) {
@@ -278,8 +339,6 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
     setIsDetecting(true);
     
     try {
-      // Step 1: Capture frame
-      console.log('📸 Capturing frame...');
       const imageData = captureFrame();
       
       if (!imageData) {
@@ -292,16 +351,13 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
       console.log('✅ Frame captured, length:', imageData.length);
       addLog(`📤 Sending ${(imageData.length / 1024).toFixed(0)}KB to backend...`);
       
-      // Step 2: Send to backend
       console.log('🌐 Fetching:', API_URL);
       
       const response = await fetch(API_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imageData }),
-        signal: AbortSignal.timeout(10000)  // Increased timeout to 10s
+        signal: AbortSignal.timeout(10000)
       });
       
       console.log('📥 Response status:', response.status);
@@ -313,7 +369,6 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
       
-      // Step 3: Parse response
       const result = await response.json();
       console.log('📦 Result:', result);
       
@@ -339,7 +394,6 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
         setUniformStatus(result.uniform_status);
         setDetections(result.detections);
         
-        // Step 4: Draw boxes
         if (result.detections.length > 0) {
           console.log('🎨 Drawing bounding boxes...');
           addLog('🎨 Drawing boxes...');
@@ -393,7 +447,6 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
     setTimeout(() => {
       addLog('🔁 Starting detection loop...');
       
-      // Function to run detection without checking state
       const doDetection = async () => {
         console.log('🚀 RUNNING DETECTION');
         
@@ -410,9 +463,7 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
           
           const response = await fetch(API_URL, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ image: imageData }),
             signal: AbortSignal.timeout(10000)
           });
@@ -451,18 +502,15 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
         }
       };
       
-      // Run first detection immediately
       doDetection();
-      
-      // Then start interval (500ms = 0.5 seconds, faster detection)
       detectionIntervalRef.current = setInterval(doDetection, 500);
       
     }, 3000);
   };
+
   const handleStop = () => {
     addLog('🛑 STOP button clicked');
     
-    // Clear interval first
     if (detectionIntervalRef.current) {
       clearInterval(detectionIntervalRef.current);
       detectionIntervalRef.current = null;
@@ -475,7 +523,6 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
     setDetectedItems([]);
     setUniformStatus('');
     
-    // Clear canvas
     if (overlayCanvasRef.current) {
       const ctx = overlayCanvasRef.current.getContext('2d');
       if (ctx) {
@@ -528,12 +575,16 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
 
   useEffect(() => {
     addLog('🚀 Component mounted');
-    
     return () => {
       addLog('🔚 Component unmounting');
       stopCamera();
     };
   }, []);
+
+  // ---------- UNIQUE VALUES FOR DROPDOWNS ----------
+  const uniqueCourses = Array.from(new Set(scheduleOptions.map(s => s.subject_name)));
+  const uniqueRooms = Array.from(new Set(scheduleOptions.map(s => s.room_code)));
+  const uniqueProfessors = Array.from(new Set(scheduleOptions.map(s => s.instructor_name)));
 
   return (
     <div style={{
@@ -824,38 +875,83 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
               Session Details
             </h2>
 
+            {/* ---------- DYNAMIC COURSE DROPDOWN ---------- */}
             <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>Course</label>
-              <select value={course} onChange={(e) => setCourse(e.target.value)} style={{ width: '100%', padding: '7px', borderRadius: '6px', border: '2px solid #d1d5db', fontSize: '14px', fontWeight: '500' }}>
+              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
+                Course
+              </label>
+              <select 
+                value={course} 
+                onChange={(e) => setCourse(e.target.value)} 
+                style={{ 
+                  width: '100%', 
+                  padding: '7px', 
+                  borderRadius: '6px', 
+                  border: '2px solid #d1d5db', 
+                  fontSize: '14px', 
+                  fontWeight: '500' 
+                }}
+              >
                 <option value="">Select Course</option>
-                <option value="BSIT">BSIT</option>
-                <option value="BSCS">BSCS</option>
-                <option value="BSIS">BSIS</option>
+                {uniqueCourses.map(subj => (
+                  <option key={subj} value={subj}>{subj}</option>
+                ))}
               </select>
             </div>
 
+            {/* ---------- DYNAMIC ROOM DROPDOWN ---------- */}
             <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>Room</label>
-              <select value={room} onChange={(e) => setRoom(e.target.value)} style={{ width: '100%', padding: '7px', borderRadius: '6px', border: '2px solid #d1d5db', fontSize: '14px', fontWeight: '500' }}>
+              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
+                Room
+              </label>
+              <select 
+                value={room} 
+                onChange={(e) => setRoom(e.target.value)} 
+                style={{ 
+                  width: '100%', 
+                  padding: '7px', 
+                  borderRadius: '6px', 
+                  border: '2px solid #d1d5db', 
+                  fontSize: '14px', 
+                  fontWeight: '500' 
+                }}
+              >
                 <option value="">Select Room</option>
-                <option value="Room 101">Room 101</option>
-                <option value="Room 102">Room 102</option>
-                <option value="Room 201">Room 201</option>
+                {uniqueRooms.map(rm => (
+                  <option key={rm} value={rm}>{rm}</option>
+                ))}
               </select>
             </div>
 
+            {/* ---------- DYNAMIC PROFESSOR DROPDOWN ---------- */}
             <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>Professor</label>
-              <select value={professor} onChange={(e) => setProfessor(e.target.value)} style={{ width: '100%', padding: '7px', borderRadius: '6px', border: '2px solid #d1d5db', fontSize: '14px', fontWeight: '500' }}>
+              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
+                Professor
+              </label>
+              <select 
+                value={professor} 
+                onChange={(e) => setProfessor(e.target.value)} 
+                style={{ 
+                  width: '100%', 
+                  padding: '7px', 
+                  borderRadius: '6px', 
+                  border: '2px solid #d1d5db', 
+                  fontSize: '14px', 
+                  fontWeight: '500' 
+                }}
+              >
                 <option value="">Select Professor</option>
-                <option value="Prof. Smith">Prof. Smith</option>
-                <option value="Prof. Johnson">Prof. Johnson</option>
-                <option value="Prof. Williams">Prof. Williams</option>
+                {uniqueProfessors.map(prof => (
+                  <option key={prof} value={prof}>{prof}</option>
+                ))}
               </select>
             </div>
 
+            {/* ---------- TARDY  ---------- */}
             <div>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>Tardy Threshold</label>
+              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
+                Tardy Threshold
+              </label>
               <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                 <select 
                   value={tardy} 
@@ -917,6 +1013,7 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
             </div>
           </div>
 
+          {/* ---------- CONTROLS ---------- */}
           <div style={{
             backgroundColor: 'rgba(255,255,255,0.95)',
             borderRadius: '12px',

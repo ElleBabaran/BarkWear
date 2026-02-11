@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, Edit2, Save, X } from 'lucide-react';
 
 interface ScheduleProps {
@@ -6,20 +6,25 @@ interface ScheduleProps {
 }
 
 interface ScheduleItem {
-  id: number;
-  subject: string;
+  schedule_id: number;
+  subject_name: string;
   block: string;
-  time: string;
-  room: string;
-  professor: string;
+  start_time: string;
+  end_time: string;
+  room_code: string;
+  instructor_name: string;
+  day_of_week?: string;
+  year_level?: number;
+  is_active?: boolean;
+  created_at?: string;
 }
 
 interface FormData {
-  subject: string;
+  subject: string;      // maps to subject_name
   block: string;
-  time: string;
-  room: string;
-  professor: string;
+  time: string;        // e.g. "9:00 - 10:30"
+  room: string;        // maps to room_code
+  professor: string;   // maps to instructor_name
 }
 
 export default function Schedule({ onBack }: ScheduleProps) {
@@ -33,6 +38,34 @@ export default function Schedule({ onBack }: ScheduleProps) {
     room: '',
     professor: ''
   });
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const API_BASE = 'http://localhost:5000/schedules';
+
+  // ---------- FETCH SCHEDULES ----------
+  const fetchSchedules = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(API_BASE + '/');
+      const data = await res.json();
+      if (data.success) {
+        setSchedules(data.schedules);
+      } else {
+        setError(data.error || 'Failed to load schedules');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Network error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load schedules on mount
+  useEffect(() => {
+    fetchSchedules();
+  }, []);
 
   const resetForm = () => {
     setFormData({
@@ -46,48 +79,114 @@ export default function Schedule({ onBack }: ScheduleProps) {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleAdd = () => {
-    if (formData.subject && formData.block && formData.time && formData.room && formData.professor) {
-      setSchedules([...schedules, { ...formData, id: Date.now() }]);
-      resetForm();
-      setIsAdding(false);
-    } else {
+  // ---------- CREATE SCHEDULE ----------
+  const handleAdd = async () => {
+    if (!formData.subject || !formData.block || !formData.time || !formData.room || !formData.professor) {
       alert('Please fill in all fields');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(API_BASE + '/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject_name: formData.subject,
+          block: formData.block,
+          time: formData.time,
+          room_code: formData.room,
+          instructor_name: formData.professor
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchSchedules();  // refresh list
+        resetForm();
+        setIsAdding(false);
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err: any) {
+      alert('Network error: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
+  // ---------- UPDATE SCHEDULE ----------
   const handleEdit = (schedule: ScheduleItem) => {
-    setEditingId(schedule.id);
+    // Format time from DB (HH:MM:SS) to "HH:MM - HH:MM"
+    const start = schedule.start_time.slice(0, 5);
+    const end = schedule.end_time.slice(0, 5);
+    const timeString = `${start} - ${end}`;
+
+    setEditingId(schedule.schedule_id);
     setFormData({
-      subject: schedule.subject,
+      subject: schedule.subject_name,
       block: schedule.block,
-      time: schedule.time,
-      room: schedule.room,
-      professor: schedule.professor
+      time: timeString,
+      room: schedule.room_code,
+      professor: schedule.instructor_name
     });
   };
 
-  const handleUpdate = () => {
-    if (formData.subject && formData.block && formData.time && formData.room && formData.professor) {
-      setSchedules(schedules.map(s => 
-        s.id === editingId ? { ...formData, id: editingId } : s
-      ));
-      resetForm();
-      setEditingId(null);
-    } else {
+  const handleUpdate = async () => {
+    if (!formData.subject || !formData.block || !formData.time || !formData.room || !formData.professor) {
       alert('Please fill in all fields');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/${editingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject_name: formData.subject,
+          block: formData.block,
+          time: formData.time,
+          room_code: formData.room,
+          instructor_name: formData.professor
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchSchedules();
+        resetForm();
+        setEditingId(null);
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err: any) {
+      alert('Network error: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleDelete = (id: number) => {
-    if (window.confirm('Are you sure you want to delete this schedule?')) {
-      setSchedules(schedules.filter(s => s.id !== id));
+  // ---------- DELETE SCHEDULE ----------
+  const handleDelete = async (id: number) => {
+    if (!window.confirm('Are you sure you want to delete this schedule?')) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        await fetchSchedules();
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err: any) {
+      alert('Network error: ' + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -98,9 +197,12 @@ export default function Schedule({ onBack }: ScheduleProps) {
   };
 
   const handleBack = () => {
-    if (onBack) {
-      onBack();
-    }
+    if (onBack) onBack();
+  };
+
+  // Format time for display (remove seconds)
+  const formatTime = (timeStr: string) => {
+    return timeStr.slice(0, 5);
   };
 
   return (
@@ -123,6 +225,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
         minHeight: 0,
         flex: 1
       }}>
+        {/* Header */}
         <div style={{ 
           display: 'flex', 
           justifyContent: 'space-between', 
@@ -158,6 +261,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
             {!isAdding && !editingId && (
               <button
                 onClick={() => setIsAdding(true)}
+                disabled={loading}
                 style={{
                   backgroundColor: '#fbbf24',
                   color: 'black',
@@ -165,11 +269,12 @@ export default function Schedule({ onBack }: ScheduleProps) {
                   padding: '8px 20px',
                   borderRadius: '6px',
                   border: 'none',
-                  cursor: 'pointer',
+                  cursor: loading ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px',
-                  fontSize: '14px'
+                  fontSize: '14px',
+                  opacity: loading ? 0.6 : 1
                 }}
               >
                 <Plus size={20} />
@@ -179,12 +284,30 @@ export default function Schedule({ onBack }: ScheduleProps) {
           </div>
         </div>
 
-        {/* Scrollable Content Area */}
+        {/* Scrollable Content */}
         <div style={{
           flex: 1,
           minHeight: 0,
           overflow: 'auto'
         }}>
+          {/* Loading / Error */}
+          {loading && !schedules.length && (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'white' }}>
+              Loading schedules...
+            </div>
+          )}
+          {error && (
+            <div style={{ 
+              backgroundColor: '#fee2e2', 
+              color: '#b91c1c', 
+              padding: '12px', 
+              borderRadius: '6px', 
+              marginBottom: '16px' 
+            }}>
+              Error: {error}
+            </div>
+          )}
+
           {/* Add/Edit Form */}
           {(isAdding || editingId) && (
             <div style={{ 
@@ -336,6 +459,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
               <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
                 <button
                   onClick={editingId ? handleUpdate : handleAdd}
+                  disabled={loading}
                   style={{
                     backgroundColor: '#16a34a',
                     color: 'white',
@@ -343,11 +467,12 @@ export default function Schedule({ onBack }: ScheduleProps) {
                     padding: '7px 20px',
                     borderRadius: '4px',
                     border: 'none',
-                    cursor: 'pointer',
+                    cursor: loading ? 'not-allowed' : 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    fontSize: '13px'
+                    fontSize: '13px',
+                    opacity: loading ? 0.6 : 1
                   }}
                 >
                   <Save size={16} />
@@ -355,6 +480,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
                 </button>
                 <button
                   onClick={handleCancel}
+                  disabled={loading}
                   style={{
                     backgroundColor: '#6b7280',
                     color: 'white',
@@ -362,7 +488,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
                     padding: '7px 20px',
                     borderRadius: '4px',
                     border: 'none',
-                    cursor: 'pointer',
+                    cursor: loading ? 'not-allowed' : 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
@@ -377,7 +503,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
           )}
 
           {/* Schedule List */}
-          {schedules.length === 0 ? (
+          {!loading && schedules.length === 0 ? (
             <div style={{ 
               backgroundColor: 'white', 
               borderRadius: '8px', 
@@ -396,7 +522,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
               {schedules.map((schedule) => (
                 <div
-                  key={schedule.id}
+                  key={schedule.schedule_id}
                   style={{
                     backgroundColor: 'white',
                     borderRadius: '8px',
@@ -431,7 +557,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
                           color: '#1e3a8a',
                           margin: 0
                         }}>
-                          {schedule.subject}
+                          {schedule.subject_name}
                         </p>
                       </div>
                       <div>
@@ -469,7 +595,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
                           color: '#1e3a8a',
                           margin: 0
                         }}>
-                          {schedule.time}
+                          {formatTime(schedule.start_time)} - {formatTime(schedule.end_time)}
                         </p>
                       </div>
                       <div>
@@ -488,7 +614,7 @@ export default function Schedule({ onBack }: ScheduleProps) {
                           color: '#1e3a8a',
                           margin: 0
                         }}>
-                          {schedule.room}
+                          {schedule.room_code}
                         </p>
                       </div>
                       <div>
@@ -507,13 +633,14 @@ export default function Schedule({ onBack }: ScheduleProps) {
                           color: '#1e3a8a',
                           margin: 0
                         }}>
-                          {schedule.professor}
+                          {schedule.instructor_name}
                         </p>
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '6px', marginLeft: '12px' }}>
                       <button
                         onClick={() => handleEdit(schedule)}
+                        disabled={loading}
                         title="Edit"
                         style={{
                           backgroundColor: '#2563eb',
@@ -521,13 +648,15 @@ export default function Schedule({ onBack }: ScheduleProps) {
                           padding: '6px',
                           borderRadius: '4px',
                           border: 'none',
-                          cursor: 'pointer'
+                          cursor: loading ? 'not-allowed' : 'pointer',
+                          opacity: loading ? 0.6 : 1
                         }}
                       >
                         <Edit2 size={16} />
                       </button>
                       <button
-                        onClick={() => handleDelete(schedule.id)}
+                        onClick={() => handleDelete(schedule.schedule_id)}
+                        disabled={loading}
                         title="Delete"
                         style={{
                           backgroundColor: '#dc2626',
@@ -535,7 +664,8 @@ export default function Schedule({ onBack }: ScheduleProps) {
                           padding: '6px',
                           borderRadius: '4px',
                           border: 'none',
-                          cursor: 'pointer'
+                          cursor: loading ? 'not-allowed' : 'pointer',
+                          opacity: loading ? 0.6 : 1
                         }}
                       >
                         <Trash2 size={16} />

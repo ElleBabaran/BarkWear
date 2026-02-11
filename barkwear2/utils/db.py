@@ -95,8 +95,23 @@ class Database:
 db = Database()
 
 def init_db():
-    """Initialize database tables"""
+    """Initialize database tables - DROPS EXISTING TABLES FIRST!"""
     
+    with db.get_connection() as conn:
+        with conn.cursor() as cursor:
+            # ⚠️ DROP TABLES IN CORRECT ORDER (respect foreign keys)
+            cursor.execute("DROP TABLE IF EXISTS violations")
+            cursor.execute("DROP TABLE IF EXISTS attendance")
+            cursor.execute("DROP TABLE IF EXISTS enrollments")
+            cursor.execute("DROP TABLE IF EXISTS schedules")
+            cursor.execute("DROP TABLE IF EXISTS students")
+            cursor.execute("DROP TABLE IF EXISTS subjects")
+            cursor.execute("DROP TABLE IF EXISTS room")
+            cursor.execute("DROP TABLE IF EXISTS colleges")
+            
+            print("🗑️ Dropped all existing tables")
+    
+    # Now create fresh tables
     tables = [
         """
         CREATE TABLE IF NOT EXISTS students (
@@ -167,4 +182,4 @@ def init_db():
             for table_sql in tables:
                 cursor.execute(table_sql)
     
-    print("✅ Database tables initialized")
+    print("✅ Database tables initialized (fresh)")

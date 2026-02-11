@@ -8,7 +8,7 @@ class Config:
     # MySQL Database Config - EDIT THIS SECTION ONLY!
     MYSQL_HOST = 'localhost'              # ← Usually OK
     MYSQL_USER = 'root'                   # ← Usually OK
-    MYSQL_PASSWORD = 'Admin#Pass123'    # ← CHANGE THIS!!!
+    MYSQL_PASSWORD = 'nutsenboldts_123IhoarBFUCK_FUCK_YOU'    # ← CHANGE THIS!!!
     MYSQL_DB = 'BarkWeb'             # ← Usually OK
     MYSQL_PORT = 3306                     # ← Usually OK
     
