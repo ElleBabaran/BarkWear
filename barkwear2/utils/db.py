@@ -1,4 +1,3 @@
-
 import pymysql
 from contextlib import contextmanager
 from barkwear2.config import Config
@@ -28,64 +27,28 @@ class Database:
             connection.close()
     
     def execute_query(self, query, params=None):
-        """
-        Execute a query and return results
-        
-        Args:
-            query: SQL query string
-            params: Query parameters (tuple or dict)
-        
-        Returns:
-            List of dictionaries (rows)
-        """
+        """Execute a query and return results (list of dicts)"""
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query, params or ())
                 return cursor.fetchall()
     
     def execute_one(self, query, params=None):
-        """
-        Execute a query and return single result
-        
-        Args:
-            query: SQL query string
-            params: Query parameters
-        
-        Returns:
-            Dictionary (single row) or None
-        """
+        """Execute a query and return single row"""
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query, params or ())
                 return cursor.fetchone()
     
     def execute_insert(self, query, params=None):
-        """
-        Execute INSERT query and return last inserted ID
-        
-        Args:
-            query: SQL INSERT query
-            params: Query parameters
-        
-        Returns:
-            Last inserted ID
-        """
+        """Execute INSERT and return last inserted ID"""
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query, params or ())
                 return cursor.lastrowid
     
     def execute_update(self, query, params=None):
-        """
-        Execute UPDATE/DELETE query
-        
-        Args:
-            query: SQL UPDATE/DELETE query
-            params: Query parameters
-        
-        Returns:
-            Number of affected rows
-        """
+        """Execute UPDATE/DELETE and return affected row count"""
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query, params or ())
@@ -95,11 +58,12 @@ class Database:
 db = Database()
 
 def init_db():
-    """Initialize database tables - DROPS EXISTING TABLES FIRST!"""
+    """Initialize database tables - DROPS EXISTING TABLES FIRST (dev only)"""
     
+    # ----- DROP OLD/NORMALIZED TABLES -----
     with db.get_connection() as conn:
         with conn.cursor() as cursor:
-            # ⚠️ DROP TABLES IN CORRECT ORDER (respect foreign keys)
+            # Drop in correct order (respect foreign keys)
             cursor.execute("DROP TABLE IF EXISTS violations")
             cursor.execute("DROP TABLE IF EXISTS attendance")
             cursor.execute("DROP TABLE IF EXISTS enrollments")
@@ -109,9 +73,12 @@ def init_db():
             cursor.execute("DROP TABLE IF EXISTS room")
             cursor.execute("DROP TABLE IF EXISTS colleges")
             
+            # ⚠️ Also drop the old 'student' table (singular, from normalized schema)
+            cursor.execute("DROP TABLE IF EXISTS student")
+            
             print("🗑️ Dropped all existing tables")
     
-    # Now create fresh tables
+    # ----- CREATE FRESH TABLES -----
     tables = [
         """
         CREATE TABLE IF NOT EXISTS students (
@@ -125,6 +92,7 @@ def init_db():
             college_code VARCHAR(10),
             face_encoding_path VARCHAR(255),
             photo_path VARCHAR(255),
+            photo_folder VARCHAR(255),      -- 📸 NEW: folder for the 3 enrollment photos
             is_active BOOLEAN DEFAULT TRUE,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP

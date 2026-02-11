@@ -17,6 +17,8 @@ class Config:
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '..', 'uploads')
     FACE_ENCODINGS_FOLDER = os.path.join(os.path.dirname(__file__), '..', 'ml-models', 'face_encodings')
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024
+
+    STUDENT_PHOTO_FOLDER = os.path.join(os.path.dirname(__file__), '..', 'Student_Pics')
     
     # ML Models Config
     YOLO_MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml-models', 'uniform_detector.pt')
@@ -34,3 +36,4 @@ class Config:
     def init_folders():
         os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
         os.makedirs(Config.FACE_ENCODINGS_FOLDER, exist_ok=True)
+        os.makedirs(Config.STUDENT_PHOTO_FOLDER, exist_ok=True)

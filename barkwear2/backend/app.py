@@ -7,17 +7,21 @@ import numpy as np
 from io import BytesIO
 from PIL import Image
 import datetime
+import os  
 
-# ---------- NEW IMPORTS ----------
+# ---------- PROJECT IMPORTS ----------
 from barkwear2.utils.db import init_db
 from barkwear2.routes.schedules_crud import schedule_bp
-# --------------------------------
+from barkwear2.routes.students import students_bp  
+from barkwear2.config import Config                
+# -------------------------------------
 
 app = Flask(__name__)
 CORS(app)
 
 # ---------- REGISTER BLUEPRINTS ----------
-app.register_blueprint(schedule_bp)   # <-- Schedule CRUD endpoints
+app.register_blueprint(schedule_bp)      
+app.register_blueprint(students_bp)      
 # -----------------------------------------
 
 # Load your trained YOLOv8 model
@@ -118,10 +122,13 @@ def test_detection():
     })
 
 if __name__ == '__main__':
-    # ---------- CREATE DATABASE TABLES ----------
+    # ---------- INITIALIZE DATABASE ----------
     with app.app_context():
-        init_db()   # <-- Ensures tables exist before first request
-    # --------------------------------------------
+        init_db()   # Creates all tables (drops existing ones in dev)
+    
+    # ---------- CREATE REQUIRED FOLDERS ----------
+    Config.init_folders()  # 👈 Creates uploads/, face_encodings/, and Student_Pics/
+    print(f"📁 Student photo folder: {Config.STUDENT_PHOTO_FOLDER}")
     
     print(f"Loading YOLOv8 model from: {MODEL_PATH}")
     print(f"Model classes: {model.names}")
