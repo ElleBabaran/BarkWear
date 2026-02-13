@@ -17,7 +17,7 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
 
   // ---------- Photo Capture State ----------
   const [currentPhoto, setCurrentPhoto] = useState<number>(1);
-  const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
+  const [capturedPhotos, setCapturedPhotos] = useState<string[]>(['', '', '']);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -68,12 +68,17 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
         const newPhotos = [...capturedPhotos];
         newPhotos[currentPhoto - 1] = photoData;
         setCapturedPhotos(newPhotos);
+
+        // Auto-advance to the next photo slot after capturing
+        if (currentPhoto < 3) {
+          setCurrentPhoto(currentPhoto + 1);
+        }
       }
     }
   };
 
   const handleNext = () => {
-    if (currentPhoto < 3) {
+    if (currentPhoto < 3 && capturedPhotos[currentPhoto - 1]) {
       setCurrentPhoto(currentPhoto + 1);
     }
   };
@@ -101,7 +106,7 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
       alert('Year level is required');
       return;
     }
-    if (capturedPhotos.length !== 3 || capturedPhotos.some(p => !p)) {
+    if (capturedPhotos.filter(p => p).length !== 3) {
       alert('Please capture all 3 photos first');
       return;
     }
@@ -130,6 +135,15 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
       const data = await response.json();
       if (data.success) {
         setSuccess(true);
+
+        // Tell the backend to reload its face recognition DB so the new
+        // student is recognised immediately in LiveDetection.
+        try {
+          await fetch('http://localhost:5000/reload-faces', { method: 'POST' });
+        } catch (_) {
+          // Non-fatal – detection will still work after next server restart
+        }
+
         alert(`Student ${studentId} registered successfully!`);
         // Go back to previous screen
         if (onBack) onBack();
@@ -542,16 +556,16 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
         <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
           <button
             onClick={handleNext}
-            disabled={currentPhoto === 3 && capturedPhotos.length < 3}
+            disabled={currentPhoto === 3}
             style={{
               flex: 1,
-              backgroundColor: (currentPhoto === 3 && capturedPhotos.length < 3) ? '#d1d5db' : '#fbbf24',
+              backgroundColor: currentPhoto === 3 ? '#d1d5db' : '#fbbf24',
               color: 'black',
               fontWeight: 'bold',
               padding: '10px 0',
               borderRadius: '4px',
               border: 'none',
-              cursor: (currentPhoto === 3 && capturedPhotos.length < 3) ? 'not-allowed' : 'pointer',
+              cursor: currentPhoto === 3 ? 'not-allowed' : 'pointer',
               fontSize: '14px'
             }}
           >

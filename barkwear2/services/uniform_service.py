@@ -4,7 +4,7 @@ Uniform Detection Service using YOLOv8
 from ultralytics import YOLO
 import cv2
 import numpy as np
-from barkwear2.config import Config
+from config import Config
 import os
 
 class UniformDetectionService:

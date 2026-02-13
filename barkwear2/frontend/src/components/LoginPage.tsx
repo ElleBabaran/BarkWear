@@ -342,14 +342,6 @@ const LoginPage: React.FC<LoginPageProps> = ({ role, onLogin, onBack }) => {
             </button>
           </div>
 
-          {/* Helper text for admin */}
-          {role === 'admin' && (
-            <div style={{ marginTop: '1.75rem', padding: '1rem', background: '#dbeafe', borderRadius: '0.75rem', border: '2px solid #3b82f6' }}>
-              <p style={{ fontSize: '0.825rem', color: '#1e3a8a', textAlign: 'center', margin: 0, fontWeight: '600' }}>
-                <strong>Default Admin:</strong> admin / admin123
-              </p>
-            </div>
-          )}
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Camera } from "lucide-react";
+import { Camera, FileText, User, BookOpen, Search, Trash2, Edit2, Download, X, Save } from "lucide-react";
 
 interface LiveDetectionProps {
   onBack?: () => void;
@@ -14,1119 +14,700 @@ interface Detection {
 interface ScheduleOption {
   schedule_id: number;
   subject_name: string;
+  subject_code: string;
   block: string;
   room_code: string;
   instructor_name: string;
-  start_time: string;      // "HH:MM:SS"
-  end_time: string;        // "HH:MM:SS"
-  day_of_week: string;     // "Monday", "Tuesday", ...
+  start_time: string;
+  end_time: string;
+  day_of_week: string;
 }
+
+interface AttendanceRecord {
+  id: string;
+  student_id: string;
+  student_name: string;
+  subject_code: string;
+  subject_name: string;
+  time_in: string;
+  time_out: string;
+  status: 'present' | 'tardy' | 'absent';
+  uniform_status: string;
+  professor: string;
+}
+
+type RecordsView = null | 'do' | 'professor';
 
 const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
   const [detectedStudentName, setDetectedStudentName] = useState('');
+  const [detectedStudentId, setDetectedStudentId] = useState('');
   const [detectedItems, setDetectedItems] = useState<string[]>([]);
   const [uniformStatus, setUniformStatus] = useState('');
   const [detections, setDetections] = useState<Detection[]>([]);
-  
-  // ---------- SESSION DETAILS (NOW FROM DB) ----------
+  const [faceBbox, setFaceBbox] = useState<number[] | null>(null);
+
   const [scheduleOptions, setScheduleOptions] = useState<ScheduleOption[]>([]);
+  const [selectedSchedule, setSelectedSchedule] = useState<ScheduleOption | null>(null);
   const [course, setCourse] = useState('');
   const [room, setRoom] = useState('');
   const [professor, setProfessor] = useState('');
-  // ----------------------------------------------------
-  
-  const [tardy, setTardy] = useState('');
+  const [tardy, setTardy] = useState('15');
+
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isDetecting, setIsDetecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [debugLog, setDebugLog] = useState<string[]>([]);
-  
+
+  const [recordsView, setRecordsView] = useState<RecordsView>(null);
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [sessionStudents, setSessionStudents] = useState<Set<string>>(new Set());
+
+  // Records UI state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editingRecord, setEditingRecord] = useState<AttendanceRecord | null>(null);
+  const [editForm, setEditForm] = useState<Partial<AttendanceRecord>>({});
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const absentCheckRef = useRef<NodeJS.Timeout | null>(null);
 
   const API_URL = 'http://localhost:5000/detect';
   const SCHEDULE_API = 'http://localhost:5000/schedules/';
 
-  const addLog = (message: string) => {
-    console.log(message);
-    setDebugLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`].slice(-10));
-  };
+  const addLog = (msg: string) =>
+    setDebugLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`].slice(-10));
 
-  // ---------- FETCH SCHEDULES FROM DATABASE ----------
+  // ── Schedules ──
   const fetchSchedules = async () => {
     try {
-      addLog('📅 Fetching schedules from database...');
       const res = await fetch(SCHEDULE_API);
       const data = await res.json();
       if (data.success) {
         setScheduleOptions(data.schedules);
-        addLog(`✅ Loaded ${data.schedules.length} schedules`);
-        
-        // Auto-select based on current day & time
         autoSelectSchedule(data.schedules);
-      } else {
-        addLog('❌ Failed to load schedules: ' + data.error);
+        addLog(`✅ Loaded ${data.schedules.length} schedules`);
       }
-    } catch (err: any) {
-      addLog('❌ Error fetching schedules: ' + err.message);
-    }
+    } catch (err: any) { addLog('❌ ' + err.message); }
   };
 
-  // ---------- AUTO-SELECT SCHEDULE (BY DAY/TIME) ----------
   const autoSelectSchedule = (schedules: ScheduleOption[]) => {
     const now = new Date();
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     const currentDay = days[now.getDay()];
-    const currentTime = now.toTimeString().slice(0, 8); // "HH:MM:SS"
-
-    const matched = schedules.find(s => {
-      if (s.day_of_week !== currentDay) return false;
-      return s.start_time <= currentTime && s.end_time >= currentTime;
-    });
-
+    const currentTime = now.toTimeString().slice(0, 8);
+    const matched = schedules.find(s =>
+      s.day_of_week === currentDay &&
+      s.start_time <= currentTime &&
+      s.end_time >= currentTime
+    );
     if (matched) {
+      setSelectedSchedule(matched);
       setCourse(matched.subject_name);
       setRoom(matched.room_code);
       setProfessor(matched.instructor_name);
-      addLog(`🎯 Auto-selected: ${matched.subject_name} (${matched.room_code} - ${matched.instructor_name})`);
-    } else {
-      addLog('⏰ No active schedule at this time');
+      addLog(`🎯 Auto-selected: ${matched.subject_name}`);
     }
   };
 
-  // ---------- LOAD SCHEDULES ON MOUNT ----------
-  useEffect(() => {
-    fetchSchedules();
-  }, []);
+  useEffect(() => { fetchSchedules(); }, []);
 
-  // ---------- CAMERA & DETECTION  ----------
+  // ── Camera ──
   const startCamera = async () => {
-    // ... (your existing startCamera function, unchanged) ...
     try {
       setErrorMessage('');
-      addLog('🎥 Requesting camera access...');
-      
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('getUserMedia is not supported in this browser');
-      }
-
-      const constraints = {
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        },
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
         audio: false
-      };
-
-      addLog('📋 Camera constraints: ' + JSON.stringify(constraints));
-      
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      addLog('✅ Camera stream obtained!');
-      addLog('📹 Stream active: ' + mediaStream.active);
-      addLog('🎬 Video tracks: ' + mediaStream.getVideoTracks().length);
-      
+      });
       setStream(mediaStream);
-      
       if (videoRef.current) {
-        addLog('📺 Setting video source...');
         videoRef.current.srcObject = mediaStream;
-        
         videoRef.current.onloadedmetadata = async () => {
-          addLog('📊 Video metadata loaded');
-          try {
-            await videoRef.current!.play();
-            addLog('▶️ Video playing');
-            
-            setTimeout(() => {
-              setDetectedStudentName('Juan Dela Cruz');
-              addLog('👤 Student detected: Juan Dela Cruz');
-            }, 2000);
-          } catch (playError) {
-            addLog('❌ Play error: ' + playError);
-          }
+          await videoRef.current!.play();
+          addLog('▶️ Camera playing');
         };
-
-        videoRef.current.onerror = (e) => {
-          addLog('❌ Video error: ' + e);
-        };
-      } else {
-        addLog('⚠️ Video ref is null');
       }
     } catch (err: any) {
-      addLog('❌ Camera error: ' + err.name + ' - ' + err.message);
-      
-      let errorMsg = 'Camera Error: ';
-      
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        errorMsg += 'Camera permission denied. Please allow camera access and refresh the page.';
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        errorMsg += 'No camera found. Please connect a camera.';
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        errorMsg += 'Camera is busy. Please close other apps using the camera.';
-      } else if (err.name === 'OverconstrainedError') {
-        errorMsg += 'Camera constraints not supported. Trying basic mode...';
-        tryBasicCamera();
-        return;
-      } else if (err.name === 'TypeError') {
-        errorMsg += 'getUserMedia not supported. Please use a modern browser (Chrome, Firefox, Edge).';
-      } else {
-        errorMsg += err.message || 'Unknown error';
-      }
-      
-      setErrorMessage(errorMsg);
-      alert(errorMsg);
-    }
-  };
-
-  const tryBasicCamera = async () => {
-    try {
-      addLog('🔄 Trying basic camera mode...');
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      
-      addLog('✅ Basic camera stream obtained!');
-      setStream(mediaStream);
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        await videoRef.current.play();
-        addLog('▶️ Basic video playing');
-      }
-    } catch (err: any) {
-      addLog('❌ Basic camera also failed: ' + err.message);
-      setErrorMessage('Cannot access camera: ' + err.message);
+      const msg = 'Camera error: ' + err.message;
+      setErrorMessage(msg);
+      addLog('❌ ' + msg);
     }
   };
 
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => {
-        track.stop();
-        addLog('🛑 Stopped track: ' + track.kind);
-      });
-      setStream(null);
-    }
-    if (detectionIntervalRef.current) {
-      clearInterval(detectionIntervalRef.current);
-      detectionIntervalRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    addLog('🛑 Camera fully stopped');
+    stream?.getTracks().forEach(t => t.stop());
+    setStream(null);
+    if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
+    if (absentCheckRef.current) clearInterval(absentCheckRef.current);
+    if (videoRef.current) videoRef.current.srcObject = null;
   };
 
   const captureFrame = (): string | null => {
-    if (!videoRef.current || !canvasRef.current) {
-      addLog('⚠️ Cannot capture: video or canvas ref missing');
-      return null;
-    }
-    
+    if (!videoRef.current || !canvasRef.current) return null;
     const video = videoRef.current;
-    
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) {
-      addLog('⚠️ Video not ready for capture');
-      return null;
-    }
-    
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return null;
     const canvas = canvasRef.current;
-    const context = canvas.getContext('2d');
-    
-    if (!context) {
-      addLog('⚠️ Cannot get canvas context');
-      return null;
-    }
-    
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0);
     return canvas.toDataURL('image/jpeg', 0.8);
   };
 
-  const drawBoundingBoxes = (detections: Detection[]) => {
-    console.log('🎨 drawBoundingBoxes called with', detections.length, 'detections');
-    
+  // ── Draw overlay ──
+  const drawOverlay = (dets: Detection[], studentName: string, fbox: number[] | null) => {
     const video = videoRef.current;
     const canvas = overlayCanvasRef.current;
-    
-    if (!video) {
-      console.error('❌ No video ref');
-      return;
-    }
-    
-    if (!canvas) {
-      console.error('❌ No canvas ref');
-      return;
-    }
-    
-    console.log('📺 Video dimensions:', video.videoWidth, 'x', video.videoHeight);
-    console.log('🖼️ Canvas dimensions:', canvas.width, 'x', canvas.height);
-    
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      console.error('❌ Cannot get canvas context');
-      return;
-    }
-    
+    if (!video || !canvas) return;
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    console.log('🧹 Canvas cleared');
-    
-    detections.forEach((det, index) => {
+
+    const labelRemap: { [k: string]: string } = { 'id_card': 'shoes' };
+    const colors: { [k: string]: string } = {
+      'shoes': '#ffff00', 'id_card': '#ffff00',
+      'blue_polo': '#00ff00', 'black_pants': '#0000ff',
+    };
+
+    dets.forEach(det => {
       const [x1, y1, x2, y2] = det.bbox;
-      const width = x2 - x1;
-      const height = y2 - y1;
-      
-      console.log(`   Box ${index + 1}:`, {
-        class: det.class,
-        confidence: det.confidence,
-        bbox: [x1, y1, x2, y2],
-        size: [width, height]
-      });
-      
-      const colors: { [key: string]: string } = {
-        'id_card': '#ff0000',
-        'blue_polo': '#00ff00',
-        'black_pants': '#0000ff',
-        'id': '#ff0000',
-        'polo': '#00ff00',
-        'pants': '#0000ff',
-        'shoes': '#ffff00'
-      };
+      const w = x2 - x1, h = y2 - y1;
+      const displayClass = labelRemap[det.class.toLowerCase()] || det.class;
       const color = colors[det.class.toLowerCase()] || '#4ade80';
-      
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 5;
-      ctx.strokeRect(x1, y1, width, height);
-      
-      ctx.fillStyle = color + '40';
-      ctx.fillRect(x1, y1, width, height);
-      
-      const label = `${det.class} ${(det.confidence * 100).toFixed(0)}%`;
-      ctx.font = 'bold 20px Arial';
-      const textMetrics = ctx.measureText(label);
-      
-      ctx.fillStyle = color;
-      ctx.fillRect(x1, y1 - 28, textMetrics.width + 10, 28);
-      
-      ctx.fillStyle = '#000000';
-      ctx.fillText(label, x1 + 5, y1 - 8);
-      
-      console.log(`   ✅ Drew box ${index + 1}`);
+      ctx.strokeStyle = color; ctx.lineWidth = 3;
+      ctx.strokeRect(x1, y1, w, h);
+      ctx.fillStyle = color + '30'; ctx.fillRect(x1, y1, w, h);
+      const label = `${displayClass} ${(det.confidence * 100).toFixed(0)}%`;
+      ctx.font = 'bold 16px Arial';
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = color; ctx.fillRect(x1, y1 - 24, tw + 10, 24);
+      ctx.fillStyle = '#000'; ctx.fillText(label, x1 + 5, y1 - 6);
     });
-    
-    console.log('✅ Finished drawing all boxes');
-    addLog(`✅ Drew ${detections.length} boxes`);
+
+    if (fbox && studentName) {
+      const [fx1, fy1, fx2, fy2] = fbox;
+      const fw = fx2 - fx1, fh = fy2 - fy1;
+      ctx.strokeStyle = '#ff6b00'; ctx.lineWidth = 3;
+      ctx.strokeRect(fx1, fy1, fw, fh);
+      ctx.fillStyle = 'rgba(255,107,0,0.15)'; ctx.fillRect(fx1, fy1, fw, fh);
+      ctx.font = 'bold 18px Arial';
+      const ntw = ctx.measureText(studentName).width;
+      ctx.fillStyle = '#ff6b00'; ctx.fillRect(fx1, fy1 - 28, ntw + 10, 28);
+      ctx.fillStyle = '#fff'; ctx.fillText(studentName, fx1 + 5, fy1 - 8);
+    }
   };
 
-  const runDetection = async () => {
-    if (isPaused || !isRecording) {
-      console.log('⏸️ Skipping detection - paused or not recording');
-      return;
+  // ── Attendance recording ──
+  const recordAttendance = (studentName: string, studentId: string, uniStatus: string) => {
+    if (!studentName) return;
+    const key = studentName.toLowerCase().trim();
+    if (sessionStudents.has(key)) return;
+
+    const now = new Date();
+    const timeIn = now.toLocaleTimeString();
+    let status: 'present' | 'tardy' | 'absent' = 'present';
+
+    if (selectedSchedule) {
+      const [sh, sm] = selectedSchedule.start_time.split(':').map(Number);
+      const classStart = new Date(now);
+      classStart.setHours(sh, sm, 0, 0);
+      const tardyMs = (parseInt(tardy, 10) || 15) * 60 * 1000;
+      if (now.getTime() > classStart.getTime() + tardyMs) status = 'tardy';
     }
-    
-    console.log('🚀 runDetection() called');
-    addLog('🔍 Starting detection...');
-    
-    setIsDetecting(true);
-    
+
+    const record: AttendanceRecord = {
+      id: Date.now().toString(),
+      student_id: studentId || 'N/A',
+      student_name: studentName,
+      subject_code: selectedSchedule?.subject_code || course,
+      subject_name: selectedSchedule?.subject_name || course,
+      time_in: timeIn,
+      time_out: '--',
+      status,
+      uniform_status: uniStatus,
+      professor,
+    };
+
+    setAttendanceRecords(prev => [...prev, record]);
+    setSessionStudents(prev => new Set([...prev, key]));
+    addLog(`📝 Recorded: ${studentName} — ${status}`);
+  };
+
+  // ── Detection loop ──
+  const doDetection = async () => {
+    const imageData = captureFrame();
+    if (!imageData) return;
     try {
-      const imageData = captureFrame();
-      
-      if (!imageData) {
-        console.error('❌ No image data captured');
-        addLog('❌ No image data');
-        setIsDetecting(false);
-        return;
-      }
-      
-      console.log('✅ Frame captured, length:', imageData.length);
-      addLog(`📤 Sending ${(imageData.length / 1024).toFixed(0)}KB to backend...`);
-      
-      console.log('🌐 Fetching:', API_URL);
-      
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imageData }),
         signal: AbortSignal.timeout(10000)
       });
-      
-      console.log('📥 Response status:', response.status);
-      console.log('📥 Response ok:', response.ok);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ HTTP Error:', response.status, errorText);
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-      
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const result = await response.json();
-      console.log('📦 Result:', result);
-      
-      addLog(`📥 Response: ${result.success ? 'SUCCESS' : 'FAILED'}`);
-      
       if (result.success) {
-        console.log('✅ Detections:', result.detections);
-        addLog(`🎯 Found ${result.detections.length} items`);
-        
-        if (result.detections.length > 0) {
-          const items = result.detections.map((det: Detection) => 
-            `${det.class} (${(det.confidence * 100).toFixed(0)}%)`
-          );
-          console.log('📋 Items:', items);
-          addLog(`📋 Items: ${items.join(', ')}`);
-          setDetectedItems(items);
-        } else {
-          console.warn('⚠️ No detections in response');
-          addLog('⚠️ No items detected');
-          setDetectedItems(['No items detected']);
-        }
-        
-        setUniformStatus(result.uniform_status);
-        setDetections(result.detections);
-        
-        if (result.detections.length > 0) {
-          console.log('🎨 Drawing bounding boxes...');
-          addLog('🎨 Drawing boxes...');
-          drawBoundingBoxes(result.detections);
-        }
-        
-      } else {
-        console.error('❌ Backend returned error:', result.error);
-        addLog('❌ Error: ' + result.error);
-        setDetectedItems(['Error: ' + result.error]);
+        const name = result.student_name || '';
+        const sid = result.student_id || 'N/A';
+        const fbox = result.face_bbox || null;
+        setDetectedStudentName(name);
+        setDetectedStudentId(sid);
+        setFaceBbox(fbox);
+        setUniformStatus(result.uniform_status || '');
+        setDetections(result.detections || []);
+        if (result.detections?.length > 0) {
+          setDetectedItems(result.detections.map((d: Detection) =>
+            `${d.class === 'id_card' ? 'shoes' : d.class} (${(d.confidence * 100).toFixed(0)}%)`
+          ));
+        } else { setDetectedItems([]); }
+        drawOverlay(result.detections || [], name, fbox);
+        if (name) recordAttendance(name, sid, result.uniform_status || '');
+        addLog(`🎯 ${result.detections?.length || 0} items | ${name || 'no face'}`);
       }
-      
-    } catch (error: any) {
-      console.error('🔥 EXCEPTION in runDetection:', error);
-      console.error('Error name:', error.name);
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-      
-      if (error.name === 'AbortError') {
-        console.error('⏱️ Request timed out after 10 seconds');
-        addLog('⏱️ Request timeout');
-        setDetectedItems(['⏱️ Timeout']);
-      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
-        console.error('🌐 Network error - cannot reach backend');
-        addLog('🌐 Cannot reach backend');
-        setDetectedItems(['🌐 Backend offline']);
-      } else {
-        addLog('❌ Error: ' + error.message);
-        setDetectedItems(['❌ ' + error.message]);
-      }
-      
-    } finally {
-      setIsDetecting(false);
-      console.log('✅ runDetection() completed');
-    }
+    } catch (err: any) { addLog('❌ ' + err.message); }
   };
 
   const handleStart = async () => {
-    if (isRecording) {
-      addLog('⚠️ Already recording');
-      return;
-    }
-    
-    addLog('🎬 START button clicked');
-    setErrorMessage('');
-    setIsRecording(true);
-    setIsPaused(false);
-    
+    if (isRecording) return;
+    setIsRecording(true); setIsPaused(false);
+    setDetectedStudentName(''); setDetectedStudentId('');
+    setSessionStudents(new Set());
+    try { await fetch('http://localhost:5000/reload-faces', { method: 'POST' }); addLog('🔄 Face DB refreshed'); } catch (_) {}
     await startCamera();
-    
     setTimeout(() => {
-      addLog('🔁 Starting detection loop...');
-      
-      const doDetection = async () => {
-        console.log('🚀 RUNNING DETECTION');
-        
-        try {
-          const imageData = captureFrame();
-          
-          if (!imageData) {
-            console.error('❌ No image data captured');
-            return;
-          }
-          
-          console.log('✅ Frame captured, length:', imageData.length);
-          addLog(`📤 Sending to backend...`);
-          
-          const response = await fetch(API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image: imageData }),
-            signal: AbortSignal.timeout(10000)
-          });
-          
-          console.log('📥 Response status:', response.status);
-          
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
-          
-          const result = await response.json();
-          console.log('📦 Result:', result);
-          
-          if (result.success) {
-            addLog(`🎯 Found ${result.detections.length} items`);
-            
-            if (result.detections.length > 0) {
-              const items = result.detections.map((det: Detection) => 
-                `${det.class} (${(det.confidence * 100).toFixed(0)}%)`
-              );
-              console.log('📋 Items:', items);
-              setDetectedItems(items);
-              setUniformStatus(result.uniform_status);
-              setDetections(result.detections);
-              
-              console.log('🎨 Drawing bounding boxes...');
-              drawBoundingBoxes(result.detections);
-            } else {
-              setDetectedItems(['No items detected']);
-            }
-          }
-          
-        } catch (error: any) {
-          console.error('🔥 ERROR:', error);
-          addLog('❌ Error: ' + error.message);
-        }
-      };
-      
       doDetection();
-      detectionIntervalRef.current = setInterval(doDetection, 500);
-      
-    }, 3000);
+      detectionIntervalRef.current = setInterval(doDetection, 1500);
+      absentCheckRef.current = setInterval(() => {
+        if (!selectedSchedule) return;
+        const now = new Date();
+        const [sh, sm] = selectedSchedule.start_time.split(':').map(Number);
+        const tardyMs = (parseInt(tardy, 10) || 15) * 60 * 1000;
+        const deadline = new Date(now); deadline.setHours(sh, sm, 0, 0);
+        if (now.getTime() > deadline.getTime() + tardyMs) {
+          setAttendanceRecords(prev => prev.map(r => r.time_in === '--' ? { ...r, status: 'absent' } : r));
+        }
+      }, 60000);
+      addLog('🔁 Detection started');
+    }, 2500);
   };
 
   const handleStop = () => {
-    addLog('🛑 STOP button clicked');
-    
-    if (detectionIntervalRef.current) {
-      clearInterval(detectionIntervalRef.current);
-      detectionIntervalRef.current = null;
-    }
-    
+    if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
+    if (absentCheckRef.current) clearInterval(absentCheckRef.current);
+    // Mark time_out for all present/tardy students
+    const timeOut = new Date().toLocaleTimeString();
+    setAttendanceRecords(prev => prev.map(r =>
+      r.time_out === '--' && r.status !== 'absent' ? { ...r, time_out: timeOut } : r
+    ));
     stopCamera();
-    setIsRecording(false);
-    setIsPaused(false);
-    setDetections([]);
-    setDetectedItems([]);
-    setUniformStatus('');
-    
-    if (overlayCanvasRef.current) {
-      const ctx = overlayCanvasRef.current.getContext('2d');
-      if (ctx) {
-        ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-      }
-    }
+    setIsRecording(false); setIsPaused(false);
+    setDetections([]); setDetectedItems([]); setUniformStatus('');
+    overlayCanvasRef.current?.getContext('2d')?.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+    addLog('🛑 Stopped');
   };
 
   const handlePause = () => {
-    const newPauseState = !isPaused;
-    setIsPaused(newPauseState);
-    
-    if (videoRef.current) {
-      if (newPauseState) {
-        videoRef.current.pause();
-        addLog('⏸️ Paused');
-      } else {
-        videoRef.current.play();
-        addLog('▶️ Resumed');
-      }
-    }
+    const p = !isPaused; setIsPaused(p);
+    if (videoRef.current) p ? videoRef.current.pause() : videoRef.current.play();
+    addLog(p ? '⏸️ Paused' : '▶️ Resumed');
   };
 
-  const handleRecords = () => {
-    if (!course || !room || !professor) {
-      alert('Please fill in Course, Room, and Professor');
-      return;
+  // ── Records helpers ──
+  const statusColor = (s: string) =>
+    s === 'present' ? '#16a34a' : s === 'tardy' ? '#f59e0b' : '#dc2626';
+
+  const filteredRecords = (view: RecordsView) => {
+    let records = view === 'professor'
+      ? attendanceRecords.filter(r => r.professor === professor)
+      : attendanceRecords;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      records = records.filter(r =>
+        r.student_name.toLowerCase().includes(q) ||
+        r.student_id.toLowerCase().includes(q) ||
+        r.subject_code.toLowerCase().includes(q)
+      );
     }
-    
-    const recordData = {
-      studentName: detectedStudentName || 'Unknown',
-      course,
-      room,
-      professor,
-      tardy: tardy || '0',
-      uniformStatus,
-      detectedItems,
-      timestamp: new Date().toISOString()
-    };
-    
-    addLog('📝 Record saved: ' + detectedStudentName);
-    console.log('Full record:', recordData);
-    alert(`✅ Record Saved!\n\nStudent: ${detectedStudentName}\nStatus: ${uniformStatus}\nItems: ${detectedItems.join(', ')}`);
-    
-    setCourse('');
-    setRoom('');
-    setProfessor('');
-    setTardy('');
+    return records;
   };
 
-  useEffect(() => {
-    addLog('🚀 Component mounted');
-    return () => {
-      addLog('🔚 Component unmounting');
-      stopCamera();
-    };
-  }, []);
+  const handleDelete = (id: string) => {
+    if (!window.confirm('Delete this record?')) return;
+    setAttendanceRecords(prev => prev.filter(r => r.id !== id));
+  };
 
-  // ---------- UNIQUE VALUES FOR DROPDOWNS ----------
+  const handleEditOpen = (record: AttendanceRecord) => {
+    setEditingRecord(record);
+    setEditForm({ ...record });
+  };
+
+  const handleEditSave = () => {
+    if (!editingRecord) return;
+    setAttendanceRecords(prev => prev.map(r => r.id === editingRecord.id ? { ...r, ...editForm } as AttendanceRecord : r));
+    setEditingRecord(null);
+    setEditForm({});
+  };
+
+  // ── Export to Excel (CSV) ──
+  const exportToExcel = (view: RecordsView) => {
+    const records = filteredRecords(view);
+    if (records.length === 0) { alert('No records to export.'); return; }
+
+    let headers: string[];
+    let rows: string[][];
+
+    if (view === 'do') {
+      headers = ['Student ID', 'Student Name', 'Uniform Status'];
+      rows = records.map(r => [r.student_id, r.student_name, r.uniform_status]);
+    } else {
+      headers = ['Student Name', 'Subject Code', 'Time In', 'Time Out', 'Status'];
+      rows = records.map(r => [r.student_name, r.subject_code, r.time_in, r.time_out, r.status]);
+    }
+
+    const csv = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${view === 'do' ? 'DO_Records' : 'Professor_Records'}_${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const uniqueCourses = Array.from(new Set(scheduleOptions.map(s => s.subject_name)));
   const uniqueRooms = Array.from(new Set(scheduleOptions.map(s => s.room_code)));
   const uniqueProfessors = Array.from(new Set(scheduleOptions.map(s => s.instructor_name)));
 
+  // ── Edit Modal ──
+  const EditModal = () => {
+    if (!editingRecord) return null;
+    return (
+      <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ backgroundColor: 'white', borderRadius: '12px', width: '440px', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+          <div style={{ backgroundColor: '#1e3a8a', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ color: '#fbbf24', margin: 0, fontSize: '16px', fontWeight: 'bold' }}>✏️ Edit Record</h3>
+            <button onClick={() => setEditingRecord(null)} style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '18px' }}>✕</button>
+          </div>
+          <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {[
+              { label: 'Student Name', key: 'student_name', type: 'text' },
+              { label: 'Student ID', key: 'student_id', type: 'text' },
+              { label: 'Time In', key: 'time_in', type: 'text' },
+              { label: 'Time Out', key: 'time_out', type: 'text' },
+            ].map(f => (
+              <div key={f.key}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}>{f.label}</label>
+                <input
+                  type={f.type}
+                  value={(editForm as any)[f.key] || ''}
+                  onChange={e => setEditForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                  style={{ width: '100%', border: '2px solid #d1d5db', borderRadius: '6px', padding: '8px', fontSize: '14px', boxSizing: 'border-box' }}
+                />
+              </div>
+            ))}
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}>Status</label>
+              <select
+                value={editForm.status || 'present'}
+                onChange={e => setEditForm(prev => ({ ...prev, status: e.target.value as any }))}
+                style={{ width: '100%', border: '2px solid #d1d5db', borderRadius: '6px', padding: '8px', fontSize: '14px' }}
+              >
+                <option value="present">Present</option>
+                <option value="tardy">Tardy</option>
+                <option value="absent">Absent</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}>Uniform Status</label>
+              <select
+                value={editForm.uniform_status || ''}
+                onChange={e => setEditForm(prev => ({ ...prev, uniform_status: e.target.value }))}
+                style={{ width: '100%', border: '2px solid #d1d5db', borderRadius: '6px', padding: '8px', fontSize: '14px' }}
+              >
+                <option value="Compliant">Compliant</option>
+                <option value="Partially Compliant">Partially Compliant</option>
+                <option value="Non-Compliant">Non-Compliant</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+              <button onClick={handleEditSave} style={{ flex: 1, padding: '10px', backgroundColor: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                <Save size={15} /> Save
+              </button>
+              <button onClick={() => setEditingRecord(null)} style={{ flex: 1, padding: '10px', backgroundColor: '#6b7280', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Records Modal ──
+  const RecordsModal = () => {
+    if (!recordsView) return null;
+    const records = filteredRecords(recordsView);
+    const isDO = recordsView === 'do';
+
+    return (
+      <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ backgroundColor: 'white', borderRadius: '12px', width: '92%', maxWidth: '960px', maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+
+          {/* Header */}
+          <div style={{ backgroundColor: '#1e3a8a', padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ color: '#fbbf24', margin: 0, fontSize: '18px', fontWeight: 'bold' }}>
+              {isDO ? '📋 D.O. Records' : '👩‍🏫 Professor Records'}
+            </h2>
+            <button onClick={() => setRecordsView(null)} style={{ background: 'none', border: '2px solid #fbbf24', color: '#fbbf24', borderRadius: '6px', padding: '4px 12px', cursor: 'pointer', fontWeight: 'bold' }}>✕ Close</button>
+          </div>
+
+          {/* Sub-nav */}
+          <div style={{ display: 'flex', gap: '8px', padding: '10px 16px', backgroundColor: '#f8fafc', borderBottom: '1px solid #e2e8f0', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button onClick={() => setRecordsView('do')} style={{ padding: '6px 14px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', backgroundColor: isDO ? '#1e3a8a' : '#e2e8f0', color: isDO ? 'white' : '#374151' }}>
+              📋 D.O.
+            </button>
+            <button onClick={() => setRecordsView('professor')} style={{ padding: '6px 14px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', backgroundColor: !isDO ? '#1e3a8a' : '#e2e8f0', color: !isDO ? 'white' : '#374151' }}>
+              👩‍🏫 Professor
+            </button>
+
+            {/* Search */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: '200px', backgroundColor: 'white', border: '2px solid #d1d5db', borderRadius: '6px', padding: '4px 10px' }}>
+              <Search size={14} color="#9ca3af" />
+              <input
+                type="text"
+                placeholder="Search by name, ID, subject..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ border: 'none', outline: 'none', fontSize: '13px', flex: 1 }}
+              />
+              {searchQuery && <button onClick={() => setSearchQuery('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 0 }}><X size={13} /></button>}
+            </div>
+
+            {/* Export */}
+            <button onClick={() => exportToExcel(recordsView)} style={{ padding: '6px 14px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', backgroundColor: '#16a34a', color: 'white', display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <Download size={13} /> Export CSV
+            </button>
+          </div>
+
+          {/* Table */}
+          <div style={{ overflowY: 'auto', flex: 1 }}>
+            {records.length === 0 ? (
+              <div style={{ padding: '50px', textAlign: 'center', color: '#9ca3af', fontSize: '15px' }}>
+                {searchQuery ? 'No records match your search.' : 'No records yet for this session.'}
+              </div>
+            ) : isDO ? (
+              // D.O. Table: Student ID | Student Name | Uniform
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f1f5f9', position: 'sticky', top: 0 }}>
+                    {['Student ID', 'Student Name', 'Uniform Status', 'Actions'].map(h => (
+                      <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 'bold', color: '#374151', borderBottom: '2px solid #e2e8f0' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.map((r, i) => (
+                    <tr key={r.id} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: '10px 16px', color: '#6b7280', fontFamily: 'monospace' }}>{r.student_id}</td>
+                      <td style={{ padding: '10px 16px', fontWeight: 'bold', color: '#111827' }}>{r.student_name || '—'}</td>
+                      <td style={{ padding: '10px 16px' }}>
+                        <span style={{ color: r.uniform_status === 'Compliant' ? '#16a34a' : r.uniform_status === 'Partially Compliant' ? '#f59e0b' : '#dc2626', fontWeight: 'bold', fontSize: '12px' }}>
+                          {r.uniform_status}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px 16px' }}>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button onClick={() => handleEditOpen(r)} style={{ padding: '5px 8px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}><Edit2 size={13} /></button>
+                          <button onClick={() => handleDelete(r.id)} style={{ padding: '5px 8px', backgroundColor: '#dc2626', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              // Professor Table: Student Name | Subject Code | Time In | Time Out | Status
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f1f5f9', position: 'sticky', top: 0 }}>
+                    {['Student Name', 'Subject Code', 'Time In', 'Time Out', 'Status', 'Actions'].map(h => (
+                      <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 'bold', color: '#374151', borderBottom: '2px solid #e2e8f0' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.map((r, i) => (
+                    <tr key={r.id} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: '10px 16px', fontWeight: 'bold', color: '#111827' }}>{r.student_name || '—'}</td>
+                      <td style={{ padding: '10px 16px', color: '#374151', fontFamily: 'monospace' }}>{r.subject_code}</td>
+                      <td style={{ padding: '10px 16px', color: '#374151' }}>{r.time_in}</td>
+                      <td style={{ padding: '10px 16px', color: '#374151' }}>{r.time_out}</td>
+                      <td style={{ padding: '10px 16px' }}>
+                        <span style={{ backgroundColor: statusColor(r.status) + '20', color: statusColor(r.status), padding: '3px 10px', borderRadius: '99px', fontWeight: 'bold', fontSize: '11px', textTransform: 'uppercase' }}>
+                          {r.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px 16px' }}>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button onClick={() => handleEditOpen(r)} style={{ padding: '5px 8px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}><Edit2 size={13} /></button>
+                          <button onClick={() => handleDelete(r.id)} style={{ padding: '5px 8px', backgroundColor: '#dc2626', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Footer count */}
+          <div style={{ padding: '10px 20px', backgroundColor: '#f8fafc', borderTop: '1px solid #e2e8f0', fontSize: '12px', color: '#6b7280' }}>
+            {records.length} record{records.length !== 1 ? 's' : ''} {searchQuery ? '(filtered)' : ''}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div style={{
-      width: '100vw',
-      height: '100vh',
-      backgroundColor: '#1e3a8a',
-      display: 'flex',
-      flexDirection: 'column',
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      margin: 0,
-      padding: 0,
-      overflow: 'hidden'
-    }}>
+    <div style={{ width: '100vw', height: '100vh', backgroundColor: '#1e3a8a', display: 'flex', flexDirection: 'column', position: 'fixed', top: 0, left: 0, overflow: 'hidden' }}>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
-      
-      <div style={{
-        backgroundColor: '#fbbf24',
-        padding: '16px 24px',
-        borderBottom: '3px solid #78350f'
-      }}>
-        <h1 style={{
-          fontSize: '28px',
-          fontWeight: 'bold',
-          color: '#78350f',
-          margin: 0
-        }}>
-          Uniform Detection System
-        </h1>
+      <RecordsModal />
+      <EditModal />
+
+      {/* Top bar */}
+      <div style={{ backgroundColor: '#fbbf24', padding: '12px 24px', borderBottom: '3px solid #78350f', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1 style={{ fontSize: '22px', fontWeight: 'bold', color: '#78350f', margin: 0 }}>Uniform Detection System</h1>
+        <button onClick={() => setRecordsView('do')} style={{ backgroundColor: '#1e3a8a', color: '#fbbf24', fontWeight: 'bold', padding: '8px 18px', borderRadius: '8px', border: '2px solid #78350f', cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <FileText size={15} /> RECORDS
+        </button>
       </div>
 
-      <div style={{
-        display: 'flex',
-        flex: 1,
-        padding: '24px',
-        gap: '24px',
-        overflow: 'hidden',
-        alignItems: 'flex-start'
-      }}>
-        {/* Left Panel - Status and Debug */}
-        <div style={{ 
-          width: '350px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '16px'
-        }}>
-          {/* Status */}
-          <div style={{ 
-            backgroundColor: 'rgba(255,255,255,0.1)',
-            borderRadius: '12px',
-            padding: '20px',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-          }}>
-            <h2 style={{ 
-              margin: '0 0 16px 0', 
-              fontSize: '18px', 
-              fontWeight: 'bold',
-              color: '#fbbf24',
-              borderBottom: '2px solid #fbbf24',
-              paddingBottom: '8px'
-            }}>
-              Detection Status
-            </h2>
-            <div style={{ marginBottom: '12px', fontSize: '15px', color: 'white' }}>
-              <strong>Student:</strong> 
-              <div style={{ 
-                marginTop: '4px',
-                padding: '8px',
-                backgroundColor: 'rgba(0,0,0,0.2)',
-                borderRadius: '6px',
-                color: detectedStudentName ? '#fbbf24' : '#94a3b8',
-                fontWeight: 'bold'
-              }}>
-                {detectedStudentName || 'Waiting for detection...'}
+      <div style={{ display: 'flex', flex: 1, padding: '14px', gap: '14px', overflow: 'hidden', alignItems: 'flex-start' }}>
+
+        {/* Left Panel */}
+        <div style={{ width: '280px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: '10px', padding: '14px' }}>
+            <h2 style={{ margin: '0 0 10px 0', fontSize: '15px', fontWeight: 'bold', color: '#fbbf24', borderBottom: '2px solid #fbbf24', paddingBottom: '5px' }}>Detection Status</h2>
+            <div style={{ marginBottom: '8px', fontSize: '13px', color: 'white' }}>
+              <strong>Student:</strong>
+              <div style={{ marginTop: '3px', padding: '7px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '5px', color: detectedStudentName ? '#fbbf24' : '#94a3b8', fontWeight: 'bold' }}>
+                {detectedStudentName || 'Waiting...'}
               </div>
             </div>
+            {detectedStudentId && <div style={{ marginBottom: '8px', fontSize: '12px', color: '#94a3b8' }}>ID: <span style={{ color: 'white' }}>{detectedStudentId}</span></div>}
             {uniformStatus && (
-              <div style={{ marginBottom: '12px', fontSize: '15px' }}>
-                <strong style={{ color: 'white' }}>Uniform Status:</strong>
-                <div style={{ 
-                  marginTop: '4px',
-                  padding: '8px',
-                  backgroundColor: 'rgba(0,0,0,0.2)',
-                  borderRadius: '6px',
-                  color: uniformStatus === 'Compliant' ? '#4ade80' : '#f87171',
-                  fontWeight: 'bold',
-                  textAlign: 'center'
-                }}>
-                  {uniformStatus}
-                </div>
+              <div style={{ marginBottom: '8px', fontSize: '13px' }}>
+                <strong style={{ color: 'white' }}>Uniform:</strong>
+                <div style={{ marginTop: '3px', padding: '7px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '5px', color: uniformStatus === 'Compliant' ? '#4ade80' : '#f87171', fontWeight: 'bold', textAlign: 'center' }}>{uniformStatus}</div>
               </div>
             )}
-            <div style={{ fontSize: '14px', color: 'white' }}>
-              <strong>Detected Items:</strong>
-              <div style={{ 
-                marginTop: '6px',
-                padding: '10px',
-                backgroundColor: 'rgba(0,0,0,0.2)',
-                borderRadius: '6px',
-                minHeight: '40px',
-                fontSize: '13px',
-                color: '#e5e7eb'
-              }}>
-                {detectedItems.length > 0 ? detectedItems.join(', ') : 'No items detected'}
+            <div style={{ fontSize: '12px', color: 'white' }}>
+              <strong>Items:</strong>
+              <div style={{ marginTop: '3px', padding: '7px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '5px', fontSize: '11px', color: '#e5e7eb', minHeight: '32px' }}>
+                {detectedItems.length > 0 ? detectedItems.join(', ') : 'None'}
               </div>
             </div>
-            {errorMessage && (
-              <div style={{ 
-                color: '#fca5a5', 
-                fontSize: '13px', 
-                marginTop: '12px',
-                backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                padding: '10px',
-                borderRadius: '6px',
-                border: '1px solid #fca5a5'
-              }}>
-                ⚠️ {errorMessage}
-              </div>
-            )}
+            {errorMessage && <div style={{ color: '#fca5a5', fontSize: '11px', marginTop: '8px', backgroundColor: 'rgba(239,68,68,0.2)', padding: '7px', borderRadius: '5px' }}>⚠️ {errorMessage}</div>}
           </div>
 
-          {/* Debug Log */}
-          <div style={{
-            backgroundColor: 'rgba(0,0,0,0.85)',
-            borderRadius: '12px',
-            padding: '16px',
-            flex: 1,
-            minHeight: '200px',
-            maxHeight: '300px',
-            overflowY: 'auto',
-            fontSize: '11px',
-            color: '#94a3b8',
-            fontFamily: 'monospace',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.2)'
-          }}>
-            <div style={{ color: '#fbbf24', marginBottom: '8px', fontWeight: 'bold', fontSize: '12px' }}>
-              📊 System Log
-            </div>
-            {debugLog.map((log, i) => (
-              <div key={i} style={{ marginBottom: '3px', lineHeight: '1.4' }}>{log}</div>
-            ))}
+          <div style={{ backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: '10px', padding: '10px', maxHeight: '170px', overflowY: 'auto', fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+            <div style={{ color: '#fbbf24', marginBottom: '5px', fontWeight: 'bold', fontSize: '11px' }}>📊 Log</div>
+            {debugLog.map((l, i) => <div key={i} style={{ marginBottom: '2px' }}>{l}</div>)}
           </div>
 
-          <button
-            onClick={onBack}
-            style={{
-              backgroundColor: '#fbbf24',
-              color: '#78350f',
-              fontWeight: 'bold',
-              padding: '14px',
-              fontSize: '15px',
-              border: '3px solid #78350f',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-              transition: 'all 0.2s'
-            }}
-            onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
-            onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
-          >
-            ← Back to Menu
-          </button>
+          <button onClick={onBack} style={{ backgroundColor: '#fbbf24', color: '#78350f', fontWeight: 'bold', padding: '9px', fontSize: '13px', border: '2px solid #78350f', borderRadius: '8px', cursor: 'pointer' }}>← Back</button>
         </div>
 
-        {/* Center - Camera Feed */}
-        <div style={{
-          flex: 1,
-          maxWidth: '700px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0'
-        }}>
-          <div style={{
-            backgroundColor: '#000',
-            borderRadius: '12px',
-            position: 'relative',
-            overflow: 'hidden',
-            height: '525px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            border: '4px solid #fbbf24',
-            boxShadow: '0 8px 16px rgba(0,0,0,0.3)'
-          }}>
+        {/* Camera */}
+        <div style={{ flex: 1, maxWidth: '660px' }}>
+          <div style={{ backgroundColor: '#000', borderRadius: '12px', position: 'relative', overflow: 'hidden', height: '495px', border: '4px solid #fbbf24', boxShadow: '0 8px 16px rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {isRecording ? (
               <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{ 
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    backgroundColor: '#000'
-                  }}
-                />
-                <canvas
-                  ref={overlayCanvasRef}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'contain',
-                    pointerEvents: 'none'
-                  }}
-                />
-                
-                <div style={{
-                  position: 'absolute',
-                  top: '16px',
-                  left: '16px',
-                  backgroundColor: isPaused ? '#f59e0b' : '#dc2626',
-                  color: 'white',
-                  padding: '8px 16px',
-                  borderRadius: '6px',
-                  fontWeight: 'bold',
-                  fontSize: '14px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}>
-                  <div style={{
-                    width: '8px',
-                    height: '8px',
-                    borderRadius: '50%',
-                    backgroundColor: 'white',
-                    animation: isPaused ? 'none' : 'pulse 1.5s ease-in-out infinite'
-                  }} />
+                <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'contain', backgroundColor: '#000' }} />
+                <canvas ref={overlayCanvasRef} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }} />
+                <div style={{ position: 'absolute', top: '10px', left: '10px', backgroundColor: isPaused ? '#f59e0b' : '#dc2626', color: 'white', padding: '5px 12px', borderRadius: '5px', fontWeight: 'bold', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: 'white' }} />
                   {isPaused ? 'PAUSED' : 'LIVE'}
                 </div>
-                
-                {isDetecting && (
-                  <div style={{
-                    position: 'absolute',
-                    top: '16px',
-                    right: '16px',
-                    backgroundColor: '#fbbf24',
-                    color: '#000',
-                    padding: '8px 16px',
-                    borderRadius: '6px',
-                    fontWeight: 'bold',
-                    fontSize: '14px'
-                  }}>
-                    🔍 ANALYZING...
-                  </div>
-                )}
+                {isDetecting && <div style={{ position: 'absolute', top: '10px', right: '10px', backgroundColor: '#fbbf24', color: '#000', padding: '5px 12px', borderRadius: '5px', fontWeight: 'bold', fontSize: '12px' }}>🔍 ANALYZING...</div>}
               </div>
             ) : (
               <div style={{ textAlign: 'center' }}>
-                <Camera size={80} color="#94a3b8" />
-                <p style={{ color: '#94a3b8', marginTop: '20px', fontSize: '18px', fontWeight: '500' }}>
-                  Camera Ready
-                </p>
-                <p style={{ color: '#64748b', marginTop: '8px', fontSize: '14px' }}>
-                  Click START to begin detection
-                </p>
+                <Camera size={65} color="#94a3b8" />
+                <p style={{ color: '#94a3b8', marginTop: '14px', fontSize: '15px' }}>Camera Ready</p>
+                <p style={{ color: '#64748b', fontSize: '12px' }}>Click START to begin</p>
               </div>
             )}
           </div>
         </div>
 
-        {/* Right Panel - Form and Controls */}
-        <div style={{
-          width: '320px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '10px'
-        }}>
-          <div style={{
-            backgroundColor: 'rgba(255,255,255,0.95)',
-            borderRadius: '12px',
-            padding: '16px',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-          }}>
-            <h2 style={{ 
-              margin: '0 0 12px 0', 
-              fontSize: '16px', 
-              fontWeight: 'bold',
-              color: '#1e3a8a',
-              borderBottom: '2px solid #fbbf24',
-              paddingBottom: '6px'
-            }}>
-              Session Details
-            </h2>
-
-            {/* ---------- DYNAMIC COURSE DROPDOWN ---------- */}
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
-                Course
-              </label>
-              <select 
-                value={course} 
-                onChange={(e) => setCourse(e.target.value)} 
-                style={{ 
-                  width: '100%', 
-                  padding: '7px', 
-                  borderRadius: '6px', 
-                  border: '2px solid #d1d5db', 
-                  fontSize: '14px', 
-                  fontWeight: '500' 
-                }}
-              >
-                <option value="">Select Course</option>
-                {uniqueCourses.map(subj => (
-                  <option key={subj} value={subj}>{subj}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* ---------- DYNAMIC ROOM DROPDOWN ---------- */}
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
-                Room
-              </label>
-              <select 
-                value={room} 
-                onChange={(e) => setRoom(e.target.value)} 
-                style={{ 
-                  width: '100%', 
-                  padding: '7px', 
-                  borderRadius: '6px', 
-                  border: '2px solid #d1d5db', 
-                  fontSize: '14px', 
-                  fontWeight: '500' 
-                }}
-              >
-                <option value="">Select Room</option>
-                {uniqueRooms.map(rm => (
-                  <option key={rm} value={rm}>{rm}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* ---------- DYNAMIC PROFESSOR DROPDOWN ---------- */}
-            <div style={{ marginBottom: '10px' }}>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
-                Professor
-              </label>
-              <select 
-                value={professor} 
-                onChange={(e) => setProfessor(e.target.value)} 
-                style={{ 
-                  width: '100%', 
-                  padding: '7px', 
-                  borderRadius: '6px', 
-                  border: '2px solid #d1d5db', 
-                  fontSize: '14px', 
-                  fontWeight: '500' 
-                }}
-              >
-                <option value="">Select Professor</option>
-                {uniqueProfessors.map(prof => (
-                  <option key={prof} value={prof}>{prof}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* ---------- TARDY  ---------- */}
-            <div>
-              <label style={{ display: 'block', fontSize: '11px', fontWeight: 'bold', marginBottom: '4px', textTransform: 'uppercase', color: '#374151' }}>
-                Tardy Threshold
-              </label>
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                <select 
-                  value={tardy} 
-                  onChange={(e) => setTardy(e.target.value)} 
-                  style={{ 
-                    flex: 1, 
-                    padding: '7px', 
-                    borderRadius: '6px', 
-                    border: '2px solid #d1d5db', 
-                    fontSize: '14px',
-                    fontWeight: '500'
-                  }}
-                >
-                  <option value="">Select Time</option>
-                  <option value="0">Exact Class Time</option>
-                  <option value="5">5 minutes late</option>
-                  <option value="10">10 minutes late</option>
-                  <option value="15">15 minutes late</option>
-                  <option value="20">20 minutes late</option>
-                  <option value="30">30 minutes late</option>
-                  <option value="custom">Custom...</option>
+        {/* Right Panel */}
+        <div style={{ width: '290px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {/* Session */}
+          <div style={{ backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: '10px', padding: '12px' }}>
+            <h2 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 'bold', color: '#1e3a8a', borderBottom: '2px solid #fbbf24', paddingBottom: '5px' }}>Session Details</h2>
+            {[
+              { label: 'Course', value: course, setter: setCourse, options: uniqueCourses },
+              { label: 'Room', value: room, setter: setRoom, options: uniqueRooms },
+              { label: 'Professor', value: professor, setter: setProfessor, options: uniqueProfessors },
+            ].map(f => (
+              <div key={f.label} style={{ marginBottom: '7px' }}>
+                <label style={{ display: 'block', fontSize: '10px', fontWeight: 'bold', marginBottom: '3px', color: '#374151', textTransform: 'uppercase' }}>{f.label}</label>
+                <select value={f.value} onChange={e => f.setter(e.target.value)} style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '2px solid #d1d5db', fontSize: '12px' }}>
+                  <option value="">Select {f.label}</option>
+                  {f.options.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
-                <button
-                  onClick={() => {
-                    if (!tardy) {
-                      alert('Please select a tardy threshold');
-                      return;
-                    }
-                    if (tardy === 'custom') {
-                      const customTime = prompt('Enter custom tardy time (in minutes):');
-                      if (customTime && !isNaN(Number(customTime))) {
-                        setTardy(customTime);
-                        alert(`Tardy threshold set to ${customTime} minutes`);
-                      }
-                    } else {
-                      const timeText = tardy === '0' ? 'Exact Class Time' : `${tardy} minutes late`;
-                      alert(`✓ Tardy threshold saved: ${timeText}`);
-                    }
-                  }}
-                  style={{
-                    padding: '7px 14px',
-                    borderRadius: '6px',
-                    backgroundColor: '#3b82f6',
-                    color: 'white',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontWeight: 'bold',
-                    fontSize: '12px',
-                    whiteSpace: 'nowrap',
-                    boxShadow: '0 2px 4px rgba(59,130,246,0.3)'
-                  }}
-                >
-                  SET
-                </button>
               </div>
-              <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px', fontStyle: 'italic' }}>
-                {tardy && tardy !== 'custom' ? `Late after ${tardy === '0' ? 'class start' : tardy + ' min'}` : 'Set tardiness rule'}
-              </div>
+            ))}
+            <div>
+              <label style={{ display: 'block', fontSize: '10px', fontWeight: 'bold', marginBottom: '3px', color: '#374151', textTransform: 'uppercase' }}>Tardy Threshold</label>
+              <select value={tardy} onChange={e => setTardy(e.target.value)} style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '2px solid #d1d5db', fontSize: '12px' }}>
+                <option value="0">Exact Class Time</option>
+                <option value="5">5 min late</option>
+                <option value="10">10 min late</option>
+                <option value="15">15 min late</option>
+                <option value="20">20 min late</option>
+                <option value="30">30 min late</option>
+              </select>
             </div>
           </div>
 
-          {/* ---------- CONTROLS ---------- */}
-          <div style={{
-            backgroundColor: 'rgba(255,255,255,0.95)',
-            borderRadius: '12px',
-            padding: '14px',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-          }}>
-            <h2 style={{ 
-              margin: '0 0 10px 0', 
-              fontSize: '16px', 
-              fontWeight: 'bold',
-              color: '#1e3a8a'
-            }}>
-              Controls
-            </h2>
-
-            <button
-              onClick={handleStart}
-              disabled={isRecording}
-              style={{
-                width: '100%',
-                padding: '11px',
-                borderRadius: '8px',
-                fontWeight: 'bold',
-                fontSize: '15px',
-                backgroundColor: isRecording ? '#9ca3af' : '#10b981',
-                color: '#fff',
-                border: 'none',
-                cursor: isRecording ? 'not-allowed' : 'pointer',
-                marginBottom: '8px',
-                boxShadow: isRecording ? 'none' : '0 2px 4px rgba(16,185,129,0.3)',
-                transition: 'all 0.2s'
-              }}
-            >
-              {isRecording ? '✓ STARTED' : '▶ START DETECTION'}
-            </button>
-
-            <button
-              onClick={handleStop}
-              disabled={!isRecording}
-              style={{
-                width: '100%',
-                padding: '11px',
-                borderRadius: '8px',
-                fontWeight: 'bold',
-                fontSize: '15px',
-                backgroundColor: !isRecording ? '#9ca3af' : '#ef4444',
-                color: '#fff',
-                border: 'none',
-                cursor: !isRecording ? 'not-allowed' : 'pointer',
-                marginBottom: '8px',
-                boxShadow: !isRecording ? 'none' : '0 2px 4px rgba(239,68,68,0.3)',
-                transition: 'all 0.2s'
-              }}
-            >
-              ⏹ STOP
-            </button>
-
-            <button
-              onClick={handlePause}
-              disabled={!isRecording}
-              style={{
-                width: '100%',
-                padding: '11px',
-                borderRadius: '8px',
-                fontWeight: 'bold',
-                fontSize: '15px',
-                backgroundColor: !isRecording ? '#9ca3af' : '#fbbf24',
-                color: '#000',
-                border: 'none',
-                cursor: !isRecording ? 'not-allowed' : 'pointer',
-                boxShadow: !isRecording ? 'none' : '0 2px 4px rgba(251,191,36,0.3)',
-                transition: 'all 0.2s'
-              }}
-            >
-              {isPaused ? '▶ RESUME' : '⏸ PAUSE'}
-            </button>
+          {/* Controls */}
+          <div style={{ backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: '10px', padding: '12px' }}>
+            <h2 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 'bold', color: '#1e3a8a' }}>Controls</h2>
+            {[
+              { label: isRecording ? '✓ STARTED' : '▶ START', onClick: handleStart, disabled: isRecording, bg: isRecording ? '#9ca3af' : '#10b981', color: 'white' },
+              { label: '⏹ STOP', onClick: handleStop, disabled: !isRecording, bg: !isRecording ? '#9ca3af' : '#ef4444', color: 'white' },
+              { label: isPaused ? '▶ RESUME' : '⏸ PAUSE', onClick: handlePause, disabled: !isRecording, bg: !isRecording ? '#9ca3af' : '#fbbf24', color: '#000' },
+            ].map(b => (
+              <button key={b.label} onClick={b.onClick} disabled={b.disabled} style={{ width: '100%', padding: '9px', borderRadius: '7px', fontWeight: 'bold', fontSize: '13px', backgroundColor: b.bg, color: b.color, border: 'none', cursor: b.disabled ? 'not-allowed' : 'pointer', marginBottom: '5px' }}>
+                {b.label}
+              </button>
+            ))}
           </div>
 
-          <button
-            onClick={handleRecords}
-            style={{
-              width: '100%',
-              padding: '12px',
-              borderRadius: '10px',
-              fontWeight: 'bold',
-              fontSize: '16px',
-              backgroundColor: '#1e3a8a',
-              color: '#fbbf24',
-              border: '3px solid #fbbf24',
-              cursor: 'pointer',
-              boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
-              transition: 'all 0.2s'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#fbbf24';
-              e.currentTarget.style.color = '#1e3a8a';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#1e3a8a';
-              e.currentTarget.style.color = '#fbbf24';
-            }}
-          >
-            💾 SAVE RECORD
-          </button>
+          {/* Records */}
+          <div style={{ backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: '10px', padding: '12px' }}>
+            <h2 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 'bold', color: '#1e3a8a' }}>Records</h2>
+            <button onClick={() => setRecordsView('do')} style={{ width: '100%', padding: '9px', borderRadius: '7px', fontWeight: 'bold', fontSize: '13px', backgroundColor: '#1e3a8a', color: '#fbbf24', border: '2px solid #fbbf24', cursor: 'pointer', marginBottom: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+              <BookOpen size={14} /> D.O. Records
+            </button>
+            <button onClick={() => setRecordsView('professor')} style={{ width: '100%', padding: '9px', borderRadius: '7px', fontWeight: 'bold', fontSize: '13px', backgroundColor: '#7c3aed', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+              <User size={14} /> Professor Records
+            </button>
+          </div>
         </div>
       </div>
 
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
-        }
-      `}</style>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
     </div>
   );
 };
