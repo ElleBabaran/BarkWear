@@ -52,6 +52,8 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
   const [room, setRoom] = useState('');
   const [professor, setProfessor] = useState('');
   const [tardy, setTardy] = useState('15');
+  const [customTardyTime, setCustomTardyTime] = useState('');
+  const [showCustomTardy, setShowCustomTardy] = useState(false);
 
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -214,11 +216,20 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
     const timeIn = now.toLocaleTimeString();
     let status: 'present' | 'tardy' | 'absent' = 'present';
 
-    if (selectedSchedule) {
+    if (selectedSchedule && tardy !== 'none') {
       const [sh, sm] = selectedSchedule.start_time.split(':').map(Number);
       const classStart = new Date(now);
       classStart.setHours(sh, sm, 0, 0);
-      const tardyMs = (parseInt(tardy, 10) || 15) * 60 * 1000;
+      let tardyMinutes: number;
+      if (tardy === 'custom' && customTardyTime) {
+        const [ch, cm] = customTardyTime.split(':').map(Number);
+        const customTime = new Date(now);
+        customTime.setHours(ch, cm, 0, 0);
+        tardyMinutes = (customTime.getTime() - classStart.getTime()) / 60000;
+      } else {
+        tardyMinutes = parseInt(tardy, 10) || 15;
+      }
+      const tardyMs = tardyMinutes * 60 * 1000;
       if (now.getTime() > classStart.getTime() + tardyMs) status = 'tardy';
     }
 
@@ -287,8 +298,16 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
       absentCheckRef.current = setInterval(() => {
         if (!selectedSchedule) return;
         const now = new Date();
+        if (tardy === 'none') return;
         const [sh, sm] = selectedSchedule.start_time.split(':').map(Number);
-        const tardyMs = (parseInt(tardy, 10) || 15) * 60 * 1000;
+        let tardyMinutes: number;
+        if (tardy === 'custom' && customTardyTime) {
+          const [ch, cm] = customTardyTime.split(':').map(Number);
+          const customTime = new Date(now); customTime.setHours(ch, cm, 0, 0);
+          const base = new Date(now); base.setHours(sh, sm, 0, 0);
+          tardyMinutes = (customTime.getTime() - base.getTime()) / 60000;
+        } else { tardyMinutes = parseInt(tardy, 10) || 15; }
+        const tardyMs = tardyMinutes * 60 * 1000;
         const deadline = new Date(now); deadline.setHours(sh, sm, 0, 0);
         if (now.getTime() > deadline.getTime() + tardyMs) {
           setAttendanceRecords(prev => prev.map(r => r.time_in === '--' ? { ...r, status: 'absent' } : r));
@@ -669,14 +688,35 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
             ))}
             <div>
               <label style={{ display: 'block', fontSize: '10px', fontWeight: 'bold', marginBottom: '3px', color: '#374151', textTransform: 'uppercase' }}>Tardy Threshold</label>
-              <select value={tardy} onChange={e => setTardy(e.target.value)} style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '2px solid #d1d5db', fontSize: '12px' }}>
+              <select
+                value={tardy}
+                onChange={e => {
+                  const val = e.target.value;
+                  setTardy(val);
+                  setShowCustomTardy(val === 'custom');
+                }}
+                style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '2px solid #d1d5db', fontSize: '12px' }}
+              >
+                <option value="none">None (No Tardy)</option>
                 <option value="0">Exact Class Time</option>
                 <option value="5">5 min late</option>
                 <option value="10">10 min late</option>
                 <option value="15">15 min late</option>
                 <option value="20">20 min late</option>
                 <option value="30">30 min late</option>
+                <option value="custom">Set Time for Tardy</option>
               </select>
+              {showCustomTardy && (
+                <div style={{ marginTop: '5px' }}>
+                  <label style={{ display: 'block', fontSize: '10px', fontWeight: 'bold', marginBottom: '3px', color: '#374151' }}>Tardy starts at:</label>
+                  <input
+                    type="time"
+                    value={customTardyTime}
+                    onChange={e => setCustomTardyTime(e.target.value)}
+                    style={{ width: '100%', padding: '5px', borderRadius: '5px', border: '2px solid #fbbf24', fontSize: '12px', boxSizing: 'border-box' }}
+                  />
+                </div>
+              )}
             </div>
           </div>
 
