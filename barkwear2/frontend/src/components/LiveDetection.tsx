@@ -251,10 +251,19 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
     addLog(`📝 Recorded: ${studentName} — ${status}`);
   };
 
+  const isDetectingRef = useRef(false);
+
   // ── Detection loop ──
   const doDetection = async () => {
+    if (isDetectingRef.current || isPaused) return; // prevent overlapping calls
+    isDetectingRef.current = true;
+    setIsDetecting(true);
     const imageData = captureFrame();
-    if (!imageData) return;
+    if (!imageData) {
+      isDetectingRef.current = false;
+      setIsDetecting(false);
+      return;
+    }
     try {
       const response = await fetch(API_URL, {
         method: 'POST',
@@ -283,6 +292,10 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
         addLog(`🎯 ${result.detections?.length || 0} items | ${name || 'no face'}`);
       }
     } catch (err: any) { addLog('❌ ' + err.message); }
+    finally {
+      isDetectingRef.current = false;
+      setIsDetecting(false);
+    }
   };
 
   const handleStart = async () => {
@@ -294,7 +307,7 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
     await startCamera();
     setTimeout(() => {
       doDetection();
-      detectionIntervalRef.current = setInterval(doDetection, 1500);
+      detectionIntervalRef.current = setInterval(doDetection, 1000); // 1s — guard prevents stacking
       absentCheckRef.current = setInterval(() => {
         if (!selectedSchedule) return;
         const now = new Date();
@@ -314,12 +327,13 @@ const LiveDetection: React.FC<LiveDetectionProps> = ({ onBack = () => {} }) => {
         }
       }, 60000);
       addLog('🔁 Detection started');
-    }, 2500);
+    }, 500);
   };
 
   const handleStop = () => {
     if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
     if (absentCheckRef.current) clearInterval(absentCheckRef.current);
+    isDetectingRef.current = false;
     // Mark time_out for all present/tardy students
     const timeOut = new Date().toLocaleTimeString();
     setAttendanceRecords(prev => prev.map(r =>

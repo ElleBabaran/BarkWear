@@ -26,6 +26,14 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const [faceGuideMsg, setFaceGuideMsg] = useState<string>('Position your face in the center');
+
+  // 🆕 Face Detection Settings
+  const [faceConfidence, setFaceConfidence] = useState<number>(0.2); // Default 20% - lenient for far faces
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [detectionQuality, setDetectionQuality] = useState<'fast' | 'accurate'>('accurate');
+  const [showFaceGuide, setShowFaceGuide] = useState<boolean>(true);
 
   // ---------- Camera Setup ----------
   useEffect(() => {
@@ -40,7 +48,11 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
   const startCamera = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user' }
+        video: { 
+          facingMode: 'user',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
       });
       setStream(mediaStream);
       if (videoRef.current) {
@@ -52,28 +64,92 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
     }
   };
 
-  const capturePhoto = () => {
-    if (videoRef.current && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
+  const capturePhoto = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    setCapturing(true);
+    setFaceGuideMsg('🔍 Detecting face...');
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
 
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
 
-        const photoData = canvas.toDataURL('image/jpeg');
-        const newPhotos = [...capturedPhotos];
-        newPhotos[currentPhoto - 1] = photoData;
-        setCapturedPhotos(newPhotos);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { setCapturing(false); return; }
 
-        // Auto-advance to the next photo slot after capturing
-        if (currentPhoto < 3) {
-          setCurrentPhoto(currentPhoto + 1);
+    // Draw full frame to canvas
+    ctx.drawImage(video, 0, 0);
+    const fullFrame = canvas.toDataURL('image/jpeg', 0.9);
+
+    try {
+      const res = await fetch('http://localhost:5000/detect-face', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          image: fullFrame,
+          confidence: faceConfidence,
+          quality: detectionQuality
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      const result = await res.json();
+      const fbox: number[] | null = result.face_bbox || null;
+      const faceConfidenceScore = result.confidence || 0;
+
+      if (fbox && fbox.length === 4 && faceConfidenceScore >= faceConfidence) {
+        // Face detected — crop tightly around face only
+        const [fx1, fy1, fx2, fy2] = fbox;
+        const padX = (fx2 - fx1) * 0.05;
+        const padY = (fy2 - fy1) * 0.08;
+        
+        const cx1 = Math.max(0, fx1 - padX);
+        const cy1 = Math.max(0, fy1 - padY);
+        const cw = Math.min(video.videoWidth - cx1, (fx2 - fx1) + padX * 2);
+        const ch = Math.min(video.videoHeight - cy1, (fy2 - fy1) + padY * 2);
+
+        const faceCanvas = document.createElement('canvas');
+        faceCanvas.width = cw;
+        faceCanvas.height = ch;
+        const faceCtx = faceCanvas.getContext('2d');
+        
+        if (faceCtx) {
+          faceCtx.drawImage(video, cx1, cy1, cw, ch, 0, 0, cw, ch);
+          const photoData = faceCanvas.toDataURL('image/jpeg', 0.95);
+          
+          const newPhotos = [...capturedPhotos];
+          newPhotos[currentPhoto - 1] = photoData;
+          setCapturedPhotos(newPhotos);
+          setFaceGuideMsg(`✅ Face captured! (${(faceConfidenceScore * 100).toFixed(0)}% confidence)`);
+
+          if (currentPhoto < 3) {
+            setCurrentPhoto(currentPhoto + 1);
+            setTimeout(() => setFaceGuideMsg('Position your face in the center'), 2000);
+          } else {
+            setTimeout(() => setFaceGuideMsg('All 3 photos captured!'), 2000);
+          }
         }
+      } else {
+        // No face or low confidence — do NOT save, force retry
+        if (fbox && faceConfidenceScore < faceConfidence) {
+          setFaceGuideMsg(`⚠️ Confidence too low (${(faceConfidenceScore * 100).toFixed(0)}%) — subukan ulit`);
+          setError(`Face detected but confidence too low (${(faceConfidenceScore * 100).toFixed(0)}%). Lower the threshold or move closer.`);
+        } else {
+          setFaceGuideMsg('⚠️ Walang nakitang mukha — subukan ulit');
+          setError('No face detected. Make sure your face is clearly visible and well-lit.');
+        }
+        setTimeout(() => setError(null), 4000);
       }
+
+    } catch (err: any) {
+      // Backend offline — do NOT save, show error only
+      console.warn('Face detection unavailable:', err.message);
+      setFaceGuideMsg('⚠️ Backend offline — hindi ma-detect ang mukha');
+      setError('Backend is offline. Cannot capture without face detection.');
+      setTimeout(() => setError(null), 4000);
+    } finally {
+      setCapturing(false);
     }
   };
 
@@ -81,6 +157,21 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
     if (currentPhoto < 3 && capturedPhotos[currentPhoto - 1]) {
       setCurrentPhoto(currentPhoto + 1);
     }
+  };
+
+  // 🆕 Retake current photo
+  const handleRetake = () => {
+    const newPhotos = [...capturedPhotos];
+    newPhotos[currentPhoto - 1] = '';
+    setCapturedPhotos(newPhotos);
+    setFaceGuideMsg('Position your face in the center');
+    setError(null);
+  };
+
+  // 🆕 Adjust confidence threshold
+  const adjustConfidence = (delta: number) => {
+    const newConf = Math.max(0.1, Math.min(0.9, faceConfidence + delta));
+    setFaceConfidence(newConf);
   };
 
   // ---------- Form Submission ----------
@@ -127,8 +218,7 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
           block: block.trim(),
           year_level: parseInt(yearLevel, 10),
           college_code: collegeCode.trim() || undefined,
-          photos: capturedPhotos  // array of 3 base64 strings
-          // face_image: optional – you could send one of the photos here if needed
+          photos: capturedPhotos
         })
       });
 
@@ -136,16 +226,12 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
       if (data.success) {
         setSuccess(true);
 
-        // Tell the backend to reload its face recognition DB so the new
-        // student is recognised immediately in LiveDetection.
+        // Reload face recognition DB
         try {
           await fetch('http://localhost:5000/reload-faces', { method: 'POST' });
-        } catch (_) {
-          // Non-fatal – detection will still work after next server restart
-        }
+        } catch (_) {}
 
         alert(`Student ${studentId} registered successfully!`);
-        // Go back to previous screen
         if (onBack) onBack();
       } else {
         setError(data.error || 'Registration failed');
@@ -190,8 +276,8 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
         gap: '6px',
         minHeight: 0
       }}>
-        {/* Back Button */}
-        <div style={{ height: '32px', flexShrink: 0 }}>
+        {/* Back Button & Settings Toggle */}
+        <div style={{ height: '32px', flexShrink: 0, display: 'flex', gap: '8px' }}>
           <button
             onClick={handleBack}
             style={{
@@ -206,9 +292,145 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
               height: '32px'
             }}
           >
-            Back
+            ← Back
+          </button>
+          
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            style={{
+              backgroundColor: showSettings ? '#10b981' : '#6b7280',
+              color: 'white',
+              fontWeight: 'bold',
+              padding: '6px 16px',
+              borderRadius: '4px',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '14px',
+              height: '32px'
+            }}
+          >
+            ⚙️ Settings
           </button>
         </div>
+
+        {/* 🆕 Settings Panel */}
+        {showSettings && (
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '4px',
+            padding: '12px',
+            flexShrink: 0
+          }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', fontWeight: 'bold', color: '#1e3a8a' }}>
+              Face Detection Settings
+            </h3>
+            
+            {/* Confidence Threshold */}
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}>
+                Confidence Threshold: {(faceConfidence * 100).toFixed(0)}%
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  onClick={() => adjustConfidence(-0.1)}
+                  style={{
+                    backgroundColor: '#ef4444',
+                    color: 'white',
+                    fontWeight: 'bold',
+                    padding: '6px 12px',
+                    borderRadius: '4px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '16px'
+                  }}
+                >
+                  -
+                </button>
+                
+                <input
+                  type="range"
+                  min="10"
+                  max="90"
+                  value={faceConfidence * 100}
+                  onChange={(e) => setFaceConfidence(parseInt(e.target.value) / 100)}
+                  style={{ flex: 1 }}
+                />
+                
+                <button
+                  onClick={() => adjustConfidence(0.1)}
+                  style={{
+                    backgroundColor: '#10b981',
+                    color: 'white',
+                    fontWeight: 'bold',
+                    padding: '6px 12px',
+                    borderRadius: '4px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '16px'
+                  }}
+                >
+                  +
+                </button>
+              </div>
+              <div style={{ fontSize: '10px', color: '#6b7280', marginTop: '4px' }}>
+                Lower = more lenient, Higher = more strict
+              </div>
+            </div>
+
+            {/* Detection Quality */}
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#374151' }}>
+                Detection Quality
+              </label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => setDetectionQuality('fast')}
+                  style={{
+                    flex: 1,
+                    backgroundColor: detectionQuality === 'fast' ? '#10b981' : '#d1d5db',
+                    color: detectionQuality === 'fast' ? 'white' : 'black',
+                    fontWeight: 'bold',
+                    padding: '6px',
+                    borderRadius: '4px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '12px'
+                  }}
+                >
+                  ⚡ Fast
+                </button>
+                <button
+                  onClick={() => setDetectionQuality('accurate')}
+                  style={{
+                    flex: 1,
+                    backgroundColor: detectionQuality === 'accurate' ? '#10b981' : '#d1d5db',
+                    color: detectionQuality === 'accurate' ? 'white' : 'black',
+                    fontWeight: 'bold',
+                    padding: '6px',
+                    borderRadius: '4px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '12px'
+                  }}
+                >
+                  🎯 Accurate
+                </button>
+              </div>
+            </div>
+
+            {/* Face Guide Toggle */}
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showFaceGuide}
+                  onChange={(e) => setShowFaceGuide(e.target.checked)}
+                />
+                <span>Show face guide overlay</span>
+              </label>
+            </div>
+          </div>
+        )}
 
         {/* Camera Box */}
         <div style={{
@@ -221,11 +443,11 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
           minHeight: 0,
           gap: '6px'
         }}>
-          {/* LIVE indicator */}
+          {/* LIVE indicator & Confidence Display */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '4px',
+            justifyContent: 'space-between',
             height: '24px',
             flexShrink: 0
           }}>
@@ -247,6 +469,17 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
               }}></div>
               <span style={{ fontWeight: 'bold', fontSize: '11px' }}>LIVE</span>
             </div>
+            
+            <div style={{
+              fontSize: '11px',
+              fontWeight: 'bold',
+              color: '#1e3a8a',
+              backgroundColor: '#fbbf24',
+              padding: '4px 10px',
+              borderRadius: '12px'
+            }}>
+              Threshold: {(faceConfidence * 100).toFixed(0)}%
+            </div>
           </div>
 
           {/* Video + Captured Image Overlay */}
@@ -256,7 +489,8 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
             borderRadius: '3px',
             border: '3px solid #9ca3af',
             flex: 1,
-            minHeight: 0
+            minHeight: 0,
+            overflow: 'hidden'
           }}>
             <video
               ref={videoRef}
@@ -271,6 +505,26 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
               }}
             />
             <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+            {/* 🆕 Face Guide Overlay */}
+            {showFaceGuide && !capturedPhotos[currentPhoto - 1] && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'none'
+              }}>
+                <div style={{
+                  width: '420px',
+                  height: '420px',
+                  borderRadius: '50%',
+                  border: '3px dashed #fbbf24',
+                  flexShrink: 0
+                }} />
+              </div>
+            )}
 
             {capturedPhotos[currentPhoto - 1] && (
               <img
@@ -312,37 +566,87 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
             height: '38px',
             flexShrink: 0
           }}>
-            {/* Green indicator dots */}
+            {/* Photo thumbnails */}
             <div style={{ display: 'flex', gap: '6px' }}>
               {[1, 2, 3].map(num => (
                 <div
                   key={num}
+                  onClick={() => setCurrentPhoto(num)}
                   style={{
                     width: '38px',
                     height: '38px',
                     borderRadius: '3px',
-                    backgroundColor: capturedPhotos[num - 1] ? '#22c55e' : '#9ca3af'
+                    backgroundColor: capturedPhotos[num - 1] ? '#22c55e' : '#9ca3af',
+                    border: currentPhoto === num ? '3px solid #fbbf24' : '2px solid transparent',
+                    overflow: 'hidden',
+                    cursor: 'pointer',
+                    flexShrink: 0
                   }}
-                />
+                >
+                  {capturedPhotos[num - 1] && (
+                    <img
+                      src={capturedPhotos[num - 1]}
+                      alt={`Photo ${num}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  )}
+                </div>
               ))}
             </div>
 
-            <button
-              onClick={capturePhoto}
-              style={{
-                backgroundColor: '#fbbf24',
-                color: 'black',
-                fontWeight: 'bold',
-                padding: '8px 28px',
-                borderRadius: '4px',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: '14px',
-                height: '38px'
-              }}
-            >
-              Capture
-            </button>
+            {/* Capture & Retake buttons */}
+            <div style={{ display: 'flex', gap: '6px' }}>
+              {capturedPhotos[currentPhoto - 1] && (
+                <button
+                  onClick={handleRetake}
+                  disabled={capturing}
+                  style={{
+                    backgroundColor: '#ef4444',
+                    color: 'white',
+                    fontWeight: 'bold',
+                    padding: '8px 16px',
+                    borderRadius: '4px',
+                    border: 'none',
+                    cursor: capturing ? 'not-allowed' : 'pointer',
+                    fontSize: '14px',
+                    height: '38px'
+                  }}
+                >
+                  🔄 Retake
+                </button>
+              )}
+              
+              <button
+                onClick={capturePhoto}
+                disabled={capturing}
+                style={{
+                  backgroundColor: capturing ? '#9ca3af' : '#fbbf24',
+                  color: 'black',
+                  fontWeight: 'bold',
+                  padding: '8px 24px',
+                  borderRadius: '4px',
+                  border: 'none',
+                  cursor: capturing ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  height: '38px'
+                }}
+              >
+                {capturing ? '🔍 Detecting...' : '📸 Capture'}
+              </button>
+            </div>
+          </div>
+
+          {/* Face guide message */}
+          <div style={{
+            textAlign: 'center',
+            fontSize: '12px',
+            color: faceGuideMsg.startsWith('⚠️') ? '#b91c1c' : faceGuideMsg.startsWith('✅') ? '#15803d' : '#6b7280',
+            fontWeight: faceGuideMsg.startsWith('✅') || faceGuideMsg.startsWith('⚠️') ? 'bold' : 'normal',
+            padding: '2px 0',
+            minHeight: '18px',
+            flexShrink: 0
+          }}>
+            {faceGuideMsg}
           </div>
         </div>
       </div>
@@ -569,7 +873,7 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
               fontSize: '14px'
             }}
           >
-            Next
+            Next →
           </button>
 
           <button
@@ -587,7 +891,7 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
               fontSize: '14px'
             }}
           >
-            {loading ? 'Submitting...' : 'Submit'}
+            {loading ? 'Submitting...' : '✓ Submit'}
           </button>
         </div>
 
@@ -598,7 +902,7 @@ export default function PhotoCapture({ onBack }: PhotoCaptureProps) {
           color: '#6b7280',
           textAlign: 'center'
         }}>
-          {capturedPhotos.filter(p => p).length}/3 photos captured
+          📸 {capturedPhotos.filter(p => p).length}/3 photos captured
         </div>
       </div>
     </div>
